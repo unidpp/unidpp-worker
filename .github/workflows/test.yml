@@ -34,6 +34,12 @@ jobs:
         with:
           repository: unidpp/unidpp-gateway
           path: unidpp-gateway
+      # The vector corpus rides unidpp-py's harness (the tests assert
+      # the Worker's bytes equal the canonical fixtures).
+      - uses: actions/checkout@v4
+        with:
+          repository: unidpp/unidpp-py
+          path: unidpp-py
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
