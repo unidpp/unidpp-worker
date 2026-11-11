@@ -57,6 +57,20 @@ export interface CoreExports {
     declarations: number,
     declarationsLen: number,
   ) => number;
+  unidpp_declaration_issue: (
+    seed: number,
+    declarer: number,
+    declarerLen: number,
+    counterpart: number,
+    counterpartLen: number,
+    version: bigint,
+    postures: number,
+    posturesLen: number,
+    validFrom: number,
+    validFromLen: number,
+    validTo: number,
+    validToLen: number,
+  ) => number;
   unidpp_note_take: (out: number) => number;
   unidpp_sth_verify: (
     publicKey: number,

@@ -142,6 +142,12 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
     inner.pathname = logRest;
     return stub.fetch(new Request(inner.toString(), request));
   }
+  // The relay is STATELESS: it answers in the estate module itself
+  // (REARCH R12 S5 — the hub carries no storage and no journal).
+  if (pathname === "/relay/relay") {
+    const { relay } = await import("./hub");
+    return relay(request);
+  }
   const issuerRest = pathname.startsWith("/issuer/") ? pathname.slice("/issuer".length) : null;
   const issuerData = issuerRest?.match(/^\/(passports|admin|events)($|\/)/);
   if (issuerRest && issuerData) {

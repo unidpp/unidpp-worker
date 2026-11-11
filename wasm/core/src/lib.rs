@@ -455,3 +455,71 @@ pub unsafe extern "C" fn unidpp_note_take(out: *mut u8) -> i32 {
         None => -1,
     }
 }
+
+/// Issue an interop declaration (REARCH R12 S5): signatif's own
+/// `InteropDeclaration::issue` — the declarer signs the canonical
+/// bytes in the INTEROP-DECLARATION domain. The postures ride as
+/// JSON; the issued declaration (signature included) comes back in
+/// the note buffer as JSON.
+///
+/// # Safety
+/// All pointers name readable memory of the stated lengths.
+#[no_mangle]
+pub unsafe extern "C" fn unidpp_declaration_issue(
+    seed_ptr: *const u8,
+    declarer_ptr: *const u8,
+    declarer_len: usize,
+    counterpart_ptr: *const u8,
+    counterpart_len: usize,
+    version: u64,
+    postures_ptr: *const u8,
+    postures_len: usize,
+    valid_from_ptr: *const u8,
+    valid_from_len: usize,
+    valid_to_ptr: *const u8,
+    valid_to_len: usize,
+) -> i32 {
+    use unidpp_signatif::declaration::{ClassPosture, InteropDeclaration};
+    let read = |ptr: *const u8, len: usize| -> String {
+        String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned()
+    };
+    let seed = std::slice::from_raw_parts(seed_ptr, 32);
+    let declarer = read(declarer_ptr, declarer_len);
+    let counterpart = read(counterpart_ptr, counterpart_len);
+    let postures_text = read(postures_ptr, postures_len);
+    let valid_from = read(valid_from_ptr, valid_from_len);
+    let valid_to = read(valid_to_ptr, valid_to_len);
+    let Ok(key) = operator_key(seed) else {
+        return -1;
+    };
+    let postures: Vec<ClassPosture> = match serde_json::from_str(&postures_text) {
+        Ok(postures) => postures,
+        Err(_) => return -2,
+    };
+    let issued = InteropDeclaration::issue(
+        &declarer,
+        &counterpart,
+        version,
+        postures,
+        &valid_from,
+        if valid_to.is_empty() { None } else { Some(valid_to.as_str()) },
+        &key,
+    );
+    match issued {
+        Ok(declaration) => match serde_json::to_string(&declaration) {
+            Ok(text) => {
+                unsafe {
+                    DEBUG_TEXT = Some(text);
+                }
+                0
+            }
+            Err(_) => -3,
+        },
+        Err(e) => {
+            unsafe {
+                DEBUG_TEXT = Some(format!("issue refused: {e}"));
+            }
+            -4
+        }
+    }
+}
