@@ -100,11 +100,33 @@ interface Env {
   TRUST?: DoNamespace;
   ISSUER?: DoNamespace;
   ARCHIVE?: DoNamespace;
+  IDENTITY?: DoNamespace;
+  UNIDPP_SERVER_OPERATOR_TOKEN?: string;
+  /** Host→tenant dispatch (REARCH R6 on Workers): a JSON map
+   * {"dpp.acme.example.org": "acme"} — a request whose Host names a
+   * tenant is served from that tenant's own DO namespaces (each DO
+   * id suffixed), its own journals, its own identity. */
+  TENANT_HOSTS?: string;
   ARCHIVE_BUCKET?: { put(key: string, value: string): Promise<unknown>; get(key: string): Promise<{ text(): Promise<string> } | null> };
 }
 
 export async function handle(request: Request, env?: Env): Promise<Response> {
   const { pathname } = new URL(request.url);
+  // The tenant dispatch (REARCH R6 on Workers): the request's Host
+  // names a tenant when TENANT_HOSTS declares it; every DO forward
+  // then rides that tenant's own namespaces.
+  let tenant: string | null = null;
+  if (env?.TENANT_HOSTS) {
+    try {
+      const hosts = JSON.parse(env.TENANT_HOSTS) as Record<string, string>;
+      const host = request.headers.get("host")?.split(":")[0];
+      if (host && hosts[host]) tenant = hosts[host];
+    } catch {
+      // a malformed map dispatches nobody
+    }
+  }
+  const namespace = (ns: DoNamespace | undefined, name: string) =>
+    ns ? ns.get(ns.idFromName(tenant ? `${name}@${tenant}` : name)) : null;
   // The registry rides its Durable Object (REARCH R12 S2): every
   // request under the prefix is served by the estate's one DO.
   const registryRest = pathname.startsWith("/registry/")
@@ -137,16 +159,45 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
         { status: 503, headers: { "content-type": "application/json" } },
       );
     }
-    const stub = env.LOG.get(env.LOG.idFromName("estate"));
+    const stub = namespace(env.LOG, "estate");
     const inner = new URL(request.url);
     inner.pathname = logRest;
-    return stub.fetch(new Request(inner.toString(), request));
+    return stub!.fetch(new Request(inner.toString(), request));
   }
   // The relay is STATELESS: it answers in the estate module itself
   // (REARCH R12 S5 — the hub carries no storage and no journal).
   if (pathname === "/relay/relay") {
     const { relay } = await import("./hub");
     return relay(request);
+  }
+  const identityRest = pathname.startsWith("/identity/")
+    ? pathname.slice("/identity".length)
+    : null;
+  const identityData = identityRest?.match(
+    /^\/(actors|credentials|whoami|keyring|scopes)($|\/)/,
+  );
+  if (identityRest && identityData) {
+    if (!env?.IDENTITY) {
+      return new Response(
+        JSON.stringify({ error: "the identity Durable Object is not bound" }),
+        { status: 503, headers: { "content-type": "application/json" } },
+      );
+    }
+    const stub = namespace(env.IDENTITY, "estate");
+    const inner = new URL(request.url);
+    inner.pathname = identityRest;
+    if (tenant) {
+      const headers = new Headers(request.headers);
+      headers.set("x-unidpp-tenant", tenant);
+      return stub!.fetch(
+        new Request(inner.toString(), {
+          method: request.method,
+          headers,
+          body: request.body,
+        }),
+      );
+    }
+    return stub!.fetch(new Request(inner.toString(), request));
   }
   const issuerRest = pathname.startsWith("/issuer/") ? pathname.slice("/issuer".length) : null;
   const issuerData = issuerRest?.match(/^\/(passports|admin|events)($|\/)/);
@@ -157,10 +208,10 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
         { status: 503, headers: { "content-type": "application/json" } },
       );
     }
-    const stub = env.ISSUER.get(env.ISSUER.idFromName("estate"));
+    const stub = namespace(env.ISSUER, "estate");
     const inner = new URL(request.url);
     inner.pathname = issuerRest;
-    return stub.fetch(new Request(inner.toString(), request));
+    return stub!.fetch(new Request(inner.toString(), request));
   }
   const archiveRest = pathname.startsWith("/archive/") ? pathname.slice("/archive".length) : null;
   const archiveData = archiveRest?.match(/^\/(snapshots|admin)($|\/)/);
@@ -171,10 +222,10 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
         { status: 503, headers: { "content-type": "application/json" } },
       );
     }
-    const stub = env.ARCHIVE.get(env.ARCHIVE.idFromName("estate"));
+    const stub = namespace(env.ARCHIVE, "estate");
     const inner = new URL(request.url);
     inner.pathname = archiveRest;
-    return stub.fetch(new Request(inner.toString(), request));
+    return stub!.fetch(new Request(inner.toString(), request));
   }
   const trustRest = pathname.startsWith("/trust/") ? pathname.slice("/trust".length) : null;
   const trustData = trustRest?.match(/^\/(keyring|verify|graph|anchors)($|\/)/);
@@ -185,10 +236,10 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
         { status: 503, headers: { "content-type": "application/json" } },
       );
     }
-    const stub = env.TRUST.get(env.TRUST.idFromName("estate"));
+    const stub = namespace(env.TRUST, "estate");
     const inner = new URL(request.url);
     inner.pathname = trustRest;
-    return stub.fetch(new Request(inner.toString(), request));
+    return stub!.fetch(new Request(inner.toString(), request));
   }
   switch (pathname) {
     case "/healthz":
