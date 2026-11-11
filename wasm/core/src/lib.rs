@@ -250,12 +250,6 @@ fn domain_token(text: &str) -> Option<SigningDomain> {
 /// # Safety
 /// All pointers name readable memory of the stated lengths; `err_out`
 /// names 1024 writable bytes.
-// The issuer's mint, THE SAME SOURCE the native issuer compiles
-// (included by path — byte-exactness by construction, none of the
-// cli crate's binary/tokio baggage on wasm).
-#[path = "../../../../unidpp-cli/src/passport.rs"]
-mod passport;
-
 #[no_mangle]
 pub unsafe extern "C" fn unidpp_mint_passport(
     id_ptr: *const u8,
@@ -270,7 +264,7 @@ pub unsafe extern "C" fn unidpp_mint_passport(
     out_len_ptr: *mut usize,
     err_out: *mut u8,
 ) -> i32 {
-    use passport::{MintOptions, Passport};
+    use unidpp_cli::passport::{MintOptions, Passport};
     let read_str = |ptr: *const u8, len: usize| -> String {
         if ptr.is_null() || len == 0 {
             return String::new();
@@ -439,22 +433,32 @@ pub unsafe extern "C" fn unidpp_hub_relay(
 static mut DEBUG_TEXT: Option<String> = None;
 
 /// The last note's bytes (a JSON document or a refusal), written to
-/// `out`; returns the length.
+/// `out`; returns the length. The caller's buffer must be at least
+/// `unidpp_note_capacity` bytes.
 ///
 /// # Safety
-/// `out` names 4096 writable bytes.
+/// `out` names `unidpp_note_capacity` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn unidpp_note_take(out: *mut u8) -> i32 {
     match unsafe { DEBUG_TEXT.take() } {
         Some(text) => {
             let bytes = text.as_bytes();
-            let len = bytes.len().min(4096);
+            let len = bytes.len().min(NOTE_CAPACITY);
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, len);
             len as i32
         }
         None => -1,
     }
 }
+
+/// The note buffer's capacity (the largest document the boundary
+/// produces: a passport document or a view document).
+#[no_mangle]
+pub extern "C" fn unidpp_note_capacity() -> i32 {
+    NOTE_CAPACITY as i32
+}
+
+const NOTE_CAPACITY: usize = 1_048_576;
 
 /// Issue an interop declaration (REARCH R12 S5): signatif's own
 /// `InteropDeclaration::issue` — the declarer signs the canonical
@@ -521,5 +525,175 @@ pub unsafe extern "C" fn unidpp_declaration_issue(
             }
             -4
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The projector boundary (REARCH R12 S5-serve): the lens projection —
+// THE SAME SOURCE the native projector compiles, included by path.
+// The registry- and store-side IO stays on the TS side (the estate's
+// own registry and issuer DOs are the sources); the boundary takes
+// the passport document and the lens item, returns the view document.
+// ---------------------------------------------------------------------------
+
+// The projector's modules refer to each other as crate::aggregate,
+// crate::lens, ... — the boundary module must carry those exact names
+// so the included sources compile unchanged.
+#[path = "../../../../unidpp-projector/src/aggregate.rs"]
+pub mod aggregate;
+#[path = "../../../../unidpp-projector/src/codelist.rs"]
+pub mod codelist;
+#[path = "../../../../unidpp-projector/src/lens.rs"]
+pub mod lens;
+#[path = "../../../../unidpp-projector/src/primmel.rs"]
+pub mod primmel;
+#[path = "../../../../unidpp-projector/src/project.rs"]
+pub mod project;
+#[path = "../../../../unidpp-projector/src/twin.rs"]
+pub mod twin;
+#[path = "../../../../unidpp-projector/src/fixtures.rs"]
+pub mod fixtures;
+
+use lens::LensManifest;
+use project::project;
+
+/// Project a view: the passport JSON + the lens item JSON + the query
+/// fields, the view document JSON returned through the note buffer.
+///
+/// # Safety
+/// All pointers name readable memory of the stated lengths.
+#[no_mangle]
+pub unsafe extern "C" fn unidpp_view_project(
+    passport_ptr: *const u8,
+    passport_len: usize,
+    lens_ptr: *const u8,
+    lens_len: usize,
+    at_secs: i64,
+    actor_ptr: *const u8,
+    actor_len: usize,
+) -> i32 {
+    use unidpp_cli::passport::Passport;
+    let read = |ptr: *const u8, len: usize| -> String {
+        String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned()
+    };
+    let passport_text = read(passport_ptr, passport_len);
+    let lens_text = read(lens_ptr, lens_len);
+    let actor = read(actor_ptr, actor_len);
+    std::panic::set_hook(Box::new(|info| {
+        let message = format!("{info}");
+        unsafe {
+            DEBUG_TEXT = Some(format!("projector panic: {message}"));
+        }
+    }));
+    let minted = std::panic::catch_unwind(|| {
+        let passport = Passport::from_json(&passport_text)
+            .map_err(|e| format!("not a passport document: {e}"))?;
+        let item: serde_json::Value = serde_json::from_str(&lens_text)
+            .map_err(|e| format!("the lens item is not JSON: {e}"))?;
+        let lens = LensManifest::from_item(&item).map_err(|e| format!("lens item: {e}"))?;
+        let at = if at_secs > 0 {
+            unidpp_model::time::Timestamp {
+                secs: at_secs,
+                nanos: 0,
+            }
+        } else {
+            unidpp_model::time::Timestamp::now()
+        };
+        project(
+            &passport,
+            &lens,
+            at,
+            &actor,
+            &Default::default(),
+            &project::ProfileSource::fallback("registry", None),
+            &primmel::PackageSet::empty(),
+            &codelist::MappingSet::empty(),
+            &aggregate::ChildDocuments::empty(),
+            &aggregate::RollupSealer::off(),
+        )
+        .map_err(|e| format!("projection: {e}"))
+        .and_then(|view| serde_json::to_string(&view).map_err(|e| e.to_string()))
+    });
+    let _ = std::panic::take_hook();
+    let outcome = match minted {
+        Ok(Ok(text)) => {
+            unsafe {
+                DEBUG_TEXT = Some(text);
+            }
+            0
+        }
+        Ok(Err(message)) => {
+            unsafe {
+                DEBUG_TEXT = Some(format!("view refused: {message}"));
+            }
+            -1
+        }
+        Err(_) => {
+            let message = unsafe { DEBUG_TEXT.take() }.unwrap_or_default();
+            unsafe {
+                DEBUG_TEXT = Some(format!(
+                    "view panicked: {}",
+                    if message.is_empty() { "no message".into() } else { message }
+                ));
+            }
+            -2
+        }
+    };
+    outcome
+}
+
+/// The built-in fixture lens (REARCH R12 S5-serve): the native
+/// fixtures module's own lens, serialized — the registry fallback the
+/// Worker serves when the registry lacks the profile item.
+///
+/// # Safety
+/// All pointers name readable memory of the stated lengths.
+#[no_mangle]
+pub unsafe extern "C" fn unidpp_fixture_lens(
+    profile_ptr: *const u8,
+    profile_len: usize,
+) -> i32 {
+    let profile = String::from_utf8_lossy(std::slice::from_raw_parts(profile_ptr, profile_len))
+        .into_owned();
+    let lens = fixtures::fixture_lens(&profile);
+    match lens {
+        Some(lens) => {
+            // The registry-item view the from_item contract expects:
+            // the manifest rides the item's manifest slot.
+            let item = serde_json::json!({
+                "identifier": profile,
+                "item_class": "profile",
+                "manifest": lens,
+            });
+            match serde_json::to_string(&item) {
+                Ok(text) => {
+                    unsafe {
+                        DEBUG_TEXT = Some(text);
+                    }
+                    0
+                }
+                Err(_) => -3,
+            }
+        }
+        None => -5,
+    }
+}
+
+/// The built-in demo passport (the fixtures module's own), serialized
+/// pretty — the store fallback the Worker serves when the issuer
+/// lacks the passport.
+///
+/// # Safety
+/// `out_len` names 4 writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn unidpp_fixture_passport() -> i32 {
+    match serde_json::to_string(&fixtures::demo_passport()) {
+        Ok(text) => {
+            unsafe {
+                DEBUG_TEXT = Some(text);
+            }
+            0
+        }
+        Err(_) => -3,
     }
 }

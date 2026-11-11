@@ -41,13 +41,13 @@ interface RelayRequest {
 // The note buffer contract: the core's last JSON document (a relayed
 // evidence, an issued declaration, or a refusal).
 function takeNote(core: ReturnType<typeof workerCore>): string {
-  const notePtr = core.unidpp_alloc(8192);
+  const notePtr = core.unidpp_alloc(1048576);
   const noteLen = core.unidpp_note_take(notePtr);
   const text =
     noteLen > 0
       ? new TextDecoder().decode(new Uint8Array(core.memory.buffer, notePtr, noteLen).slice())
       : "";
-  core.unidpp_free(notePtr, 8192);
+  core.unidpp_free(notePtr, 1048576);
   return text;
 }
 

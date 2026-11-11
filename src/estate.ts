@@ -199,6 +199,15 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
     }
     return stub!.fetch(new Request(inner.toString(), request));
   }
+  // The views surface (REARCH R12 S5-serve): the lens view computed
+  // through the wasm boundary, the sources the estate's own DOs.
+  if (pathname === "/views/view") {
+    const { view } = await import("./views");
+    return view(request, {
+      ISSUER: env?.ISSUER,
+      REGISTRY: env?.REGISTRY,
+    });
+  }
   const issuerRest = pathname.startsWith("/issuer/") ? pathname.slice("/issuer".length) : null;
   const issuerData = issuerRest?.match(/^\/(passports|admin|events)($|\/)/);
   if (issuerRest && issuerData) {

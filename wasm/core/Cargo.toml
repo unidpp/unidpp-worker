@@ -16,6 +16,9 @@ serde = { version = "1", features = ["derive"] }
 unidpp-event = { path = "../../../unidpp-core/crates/event" }
 unidpp-model = { path = "../../../unidpp-core/crates/model" }
 unidpp-signatif = { path = "../../../unidpp-signatif" }
+unidpp-transform = { path = "../../../unidpp-core/crates/transform" }
+unidpp-verdict = { path = "../../../unidpp-core/crates/verdict" }
+unidpp-cli = { path = "../../../unidpp-cli" }
 
 # The wasm target: getrandom 0.2 (a transitive dep of the signing
 # stack) needs its js bindings on unknown-unknown.

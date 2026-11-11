@@ -341,6 +341,18 @@ export class RegistryDO {
     }
     const one = path.match(/^\/items\/([^/]+)$/);
     if (one && request.method === "GET") return this.getOne(url, decodeURIComponent(one[1]));
+    // The generic subregister mount (the native registry's
+    // `/{class}/{id}`): the same item read, class-filtered.
+    const sub = path.match(/^\/([a-z-]+)\/([^/]+)$/);
+    if (sub && request.method === "GET") {
+      const className = sub[1];
+      const singular = Object.entries(CLASS_PLURALS).find(([, plural]) => plural === className)?.[0];
+      if (!singular && !ITEM_CLASSES.includes(className)) {
+        return notFound("no such path");
+      }
+      const itemClass = singular ?? className;
+      return this.getOneScoped(url, decodeURIComponent(sub[2]), itemClass);
+    }
     return notFound("no such path");
   }
 
@@ -450,6 +462,19 @@ export class RegistryDO {
     const body = itemView(item, null, asOf) as Record<string, unknown>;
     body.audit_seq = auditSeq;
     return stamped(201, body, isoNow());
+  }
+
+  private async getOneScoped(url: URL, identifier: string, itemClass: string): Promise<Response> {
+    const response = await this.getOne(url, identifier).catch((e) => {
+      throw e;
+    });
+    // The body is single-read: clone for the class check, serve the
+    // original.
+    const body = (await (response.clone()).json()) as { item_class?: string };
+    if (body.item_class !== itemClass) {
+      return notFound(`no registry item \`${identifier}\``);
+    }
+    return response;
   }
 
   private async getOne(url: URL, identifier: string): Promise<Response> {

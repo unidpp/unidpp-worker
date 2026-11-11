@@ -42,6 +42,17 @@ export interface CoreExports {
   ) => number;
   unidpp_debug_note: () => number;
   unidpp_debug_parse_identity: (id: number, idLen: number) => number;
+  unidpp_view_project: (
+    passport: number,
+    passportLen: number,
+    lens: number,
+    lensLen: number,
+    atSecs: bigint,
+    actor: number,
+    actorLen: number,
+  ) => number;
+  unidpp_fixture_lens: (profile: number, profileLen: number) => number;
+  unidpp_fixture_passport: () => number;
   unidpp_hub_relay: (
     hubId: number,
     hubIdLen: number,
