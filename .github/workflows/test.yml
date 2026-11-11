@@ -20,6 +20,10 @@ jobs:
           path: unidpp-core
       - uses: actions/checkout@v4
         with:
+          repository: unidpp/unidpp-signatif
+          path: unidpp-signatif
+      - uses: actions/checkout@v4
+        with:
           repository: unidpp/unidpp-cli
           path: unidpp-cli
       - uses: actions/checkout@v4
