@@ -1,0 +1,12 @@
+[package]
+name = "unidpp-core-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "UniDPP's core algorithms for the Workers port: sha256 over the model crate, byte-exact with the native binaries and the vector corpus"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+unidpp-model = { path = "../../../unidpp-core/crates/model" }

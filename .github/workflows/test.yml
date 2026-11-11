@@ -1,0 +1,33 @@
+name: Test
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: unidpp-worker
+      - uses: actions/checkout@v4
+        with:
+          repository: unidpp/unidpp-core
+          path: unidpp-core
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build the wasm core
+        run: cargo build --manifest-path unidpp-worker/wasm/core/Cargo.toml --target wasm32-unknown-unknown --release
+      - name: Stage the module
+        run: cp unidpp-worker/wasm/core/target/wasm32-unknown-unknown/release/unidpp_core_wasm.wasm unidpp-worker/src/core_bg.wasm
+      - name: Install and test
+        working-directory: unidpp-worker
+        run: |
+          npm install
+          npx tsc --noEmit
+          npx vitest run

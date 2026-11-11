@@ -1,0 +1,16 @@
+{
+  // UniDPP on Cloudflare Workers (REARCH R12)
+  "name": "unidpp",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "build": {
+    "command": "npm run build:wasm"
+  },
+  "rules": [
+    { "type": "Text", "globs": ["**/*.yaml"], "fallthrough": true },
+    { "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }
+  ]
+  // S2+ mounts Durable Object namespaces here (registry, trust, log,
+  // issuer, archive, identity, hub, tenants); S7 attaches the seven
+  // public hostnames as routes.
+}

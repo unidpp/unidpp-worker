@@ -2,3 +2,6 @@
 /build
 /.wrangler
 /dev.vars
+/node_modules
+/src/core_bg.wasm
+/pkg
