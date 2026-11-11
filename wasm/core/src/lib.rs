@@ -554,6 +554,21 @@ pub mod twin;
 #[path = "../../../../unidpp-projector/src/fixtures.rs"]
 pub mod fixtures;
 
+// The gateway's render surface, THE SAME SOURCE the native gateway
+// compiles. `crate::source` is the boundary's own carrier (the
+// gateway's source.rs is a loopback HTTP client with no meaning on
+// the edge); the passport and the profile layer ride the estate's
+// issuer and registry DOs on the TS side.
+pub mod source;
+#[path = "../../../../unidpp-gateway/src/verdict.rs"]
+pub mod verdict;
+#[path = "../../../../unidpp-gateway/src/canonical.rs"]
+pub mod canonical;
+#[path = "../../../../unidpp-gateway/src/en18222.rs"]
+pub mod en18222;
+#[path = "../../../../unidpp-gateway/src/untp.rs"]
+pub mod untp;
+
 use lens::LensManifest;
 use project::project;
 
@@ -696,4 +711,139 @@ pub unsafe extern "C" fn unidpp_fixture_passport() -> i32 {
         }
         Err(_) => -3,
     }
+}
+
+/// Render one passport in a foreign protocol shape: the protocol
+/// token selects the renderer ("en18222" | "untp"), the passport and
+/// the profile layer ride the estate's DOs as JSON, and the caller
+/// supplies the clock (SystemTime aborts on wasm32-unknown-unknown).
+/// The rendered document returns through the note buffer.
+///
+/// # Safety
+/// All pointers name readable memory of the stated lengths.
+#[no_mangle]
+pub unsafe extern "C" fn unidpp_render(
+    protocol_ptr: *const u8,
+    protocol_len: usize,
+    passport_ptr: *const u8,
+    passport_len: usize,
+    profiles_ptr: *const u8,
+    profiles_len: usize,
+    representation_ptr: *const u8,
+    representation_len: usize,
+    freshness_ptr: *const u8,
+    freshness_len: usize,
+    origin_ptr: *const u8,
+    origin_len: usize,
+    now_secs: i64,
+) -> i32 {
+    use unidpp_cli::passport::Passport;
+    let read =
+        |ptr: *const u8, len: usize| -> String {
+            String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned()
+        };
+    let protocol = read(protocol_ptr, protocol_len);
+    let passport_text = read(passport_ptr, passport_len);
+    let profiles_text = read(profiles_ptr, profiles_len);
+    let representation = read(representation_ptr, representation_len);
+    let freshness = read(freshness_ptr, freshness_len);
+    let origin = read(origin_ptr, origin_len);
+    std::panic::set_hook(Box::new(|info| {
+        let message = format!("{info}");
+        unsafe {
+            DEBUG_TEXT = Some(format!("render panic: {message}"));
+        }
+    }));
+    let rendered = std::panic::catch_unwind(move || {
+        let passport = Passport::from_json(&passport_text)
+            .map_err(|e| format!("not a passport document: {e}"))?;
+        let profile_values: Vec<serde_json::Value> = serde_json::from_str(&profiles_text)
+            .map_err(|e| format!("the profile layer is not a JSON array: {e}"))?;
+        let profiles: Vec<source::ProfileRef> = profile_values
+            .iter()
+            .map(|value| {
+                Ok(source::ProfileRef {
+                    id: value
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .ok_or("the profile ref lacks `id`")?
+                        .to_string(),
+                    version: value
+                        .get("version")
+                        .and_then(|v| v.as_str())
+                        .ok_or("the profile ref lacks `version`")?
+                        .to_string(),
+                    effective_from: match value.get("effective_from") {
+                        Some(v) if !v.is_null() => {
+                            let text = v
+                                .as_str()
+                                .ok_or("the profile effective_from is not a timestamp")?;
+                            Some(unidpp_model::Timestamp::parse(text).map_err(|e| e.to_string())?)
+                        }
+                        _ => None,
+                    },
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let gateway_passport = source::GatewayPassport {
+            document: passport,
+            profiles,
+            origin: match origin.as_str() {
+                "fixture" => source::Origin::Fixture,
+                _ => source::Origin::Issuer,
+            },
+            anchors: std::collections::HashMap::new(),
+        };
+        let at = if now_secs > 0 {
+            unidpp_model::Timestamp {
+                secs: now_secs,
+                nanos: 0,
+            }
+        } else {
+            unidpp_model::Timestamp::now()
+        };
+        match protocol.as_str() {
+            "en18222" => {
+                let representation = en18222::Representation::parse(
+                    if representation.is_empty() { None } else { Some(&representation) },
+                )
+                .map_err(|e| e)?;
+                let document = en18222::render(&gateway_passport, representation, at);
+                serde_json::to_string(&document).map_err(|e| e.to_string())
+            }
+            "untp" => {
+                let required = if freshness.is_empty() { None } else { Some(freshness.as_str()) };
+                Ok(untp::render_triad(&gateway_passport, at, required).to_string())
+            }
+            other => Err(format!(
+                "unknown protocol `{other}` (expected en18222|untp)"
+            )),
+        }
+    });
+    let _ = std::panic::take_hook();
+    let outcome = match rendered {
+        Ok(Ok(text)) => {
+            unsafe {
+                DEBUG_TEXT = Some(text);
+            }
+            0
+        }
+        Ok(Err(message)) => {
+            unsafe {
+                DEBUG_TEXT = Some(format!("render refused: {message}"));
+            }
+            -1
+        }
+        Err(_) => {
+            let message = unsafe { DEBUG_TEXT.take() }.unwrap_or_default();
+            unsafe {
+                DEBUG_TEXT = Some(format!(
+                    "render panicked: {}",
+                    if message.is_empty() { "no message".into() } else { message }
+                ));
+            }
+            -2
+        }
+    };
+    outcome
 }

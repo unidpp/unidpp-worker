@@ -208,6 +208,14 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
       REGISTRY: env?.REGISTRY,
     });
   }
+  // The render surface (REARCH R12 S5-serve): the EN 18222 document
+  // and the UNTP triad computed through the wasm boundary — the same
+  // renderers the native gateway compiles.
+  const renderRest = pathname.startsWith("/render/") ? pathname.slice("/render".length) : null;
+  if (renderRest && /^\/(en18222|untp)\//.test(renderRest)) {
+    const { render } = await import("./render");
+    return render(renderRest, request, { ISSUER: env?.ISSUER });
+  }
   const issuerRest = pathname.startsWith("/issuer/") ? pathname.slice("/issuer".length) : null;
   const issuerData = issuerRest?.match(/^\/(passports|admin|events)($|\/)/);
   if (issuerRest && issuerData) {

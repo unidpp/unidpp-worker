@@ -53,6 +53,21 @@ export interface CoreExports {
   ) => number;
   unidpp_fixture_lens: (profile: number, profileLen: number) => number;
   unidpp_fixture_passport: () => number;
+  unidpp_render: (
+    protocol: number,
+    protocolLen: number,
+    passport: number,
+    passportLen: number,
+    profiles: number,
+    profilesLen: number,
+    representation: number,
+    representationLen: number,
+    freshness: number,
+    freshnessLen: number,
+    origin: number,
+    originLen: number,
+    nowSecs: bigint,
+  ) => number;
   unidpp_hub_relay: (
     hubId: number,
     hubIdLen: number,
