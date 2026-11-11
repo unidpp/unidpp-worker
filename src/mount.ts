@@ -1,63 +1,44 @@
-// The wasm core, mounted once for the whole Worker (REARCH R12): the
-// entry mounts the CompiledWasm instance before any handler runs; the
-// Durable Objects and every consumer read it through here.
+// The wasm core, resolved once per isolate (REARCH R12): workerd
+// hands the CompiledWasm import as a WebAssembly module — pure, no
+// imports — so each isolate (the entry's and every Durable Object's)
+// instantiates its own copy; vitest mounts bytes. Idempotent: the
+// first caller pays the instantiation.
 
-import wasmInstance from "../src/core_bg.wasm";
+import wasmModule from "../src/core_bg.wasm";
 import { CoreExports } from "./wasm";
 
-interface WebAssemblyModule {
-  exports?: unknown;
-}
+let mounted: CoreExports | null = null;
 
-function isModuleLike(value: unknown): boolean {
+function resolve(): CoreExports {
+  if (mounted) return mounted;
+  const wasm: unknown = wasmModule;
+  const asInstance = wasm as { exports?: CoreExports };
+  if (asInstance.exports && Object.keys(asInstance.exports).length > 0) {
+    mounted = asInstance.exports;
+    return mounted;
+  }
   try {
-    WebAssembly.Module.exports(value as WebAssembly.Module);
-    return true;
+    // The module probe: workerd's CompiledWasm import is a module.
+    WebAssembly.Module.exports(wasm as WebAssembly.Module);
+    const instance = new WebAssembly.Instance(
+      wasm as unknown as WebAssembly.Module,
+      {} as WebAssembly.Imports,
+    );
+    mounted = instance.exports as unknown as CoreExports;
+    return mounted;
   } catch {
-    return false;
+    throw new Error("the wasm core is not mounted and cannot self-instantiate");
   }
 }
-
-let mounted: CoreExports | null = null;
 
 export function useWorkerCore(instance: CoreExports): void {
   mounted = instance;
 }
 
-// workerd hands the CompiledWasm import over as the instantiated pure
-// module (no imports, no glue); the entry resolves it once.
-export function mountWorkerCore(use: (instance: CoreExports) => void): void {
-  if (mounted) {
-    use(mounted);
-    return;
-  }
-  const wasm: unknown = wasmInstance;
-  const asInstance = wasm as { exports?: CoreExports };
-  if (asInstance.exports && Object.keys(asInstance.exports).length > 0) {
-    mounted = asInstance.exports;
-    use(mounted);
-    return;
-  }
-  // workerd hands the CompiledWasm import over as a WebAssembly
-  // MODULE: the module is pure (no imports), so instantiating it here
-  // is the whole ceremony.
-  const asModule = wasm as WebAssemblyModule;
-  if (typeof asModule.exports === "function" || (wasm as { constructor?: { name?: string } }).constructor?.name === "WebAssemblyModule" || isModuleLike(wasm)) {
-    const instance = new WebAssembly.Instance(wasm as unknown as WebAssembly.Module, {} as WebAssembly.Imports);
-    mounted = instance.exports as unknown as CoreExports;
-    use(mounted);
-    return;
-  }
-  use(wasm as CoreExports);
+export function workerCore(): CoreExports {
+  return resolve();
 }
 
-export function workerCore(): CoreExports {
-  if (mounted) return mounted;
-  const wasm: unknown = wasmInstance;
-  const candidate = (wasm as { exports?: CoreExports }).exports;
-  if (candidate) {
-    mounted = candidate;
-    return mounted;
-  }
-  throw new Error("the wasm core is not mounted");
+export function mountWorkerCore(use: (instance: CoreExports) => void): void {
+  use(resolve());
 }
