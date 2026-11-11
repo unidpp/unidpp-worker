@@ -11,10 +11,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: unidpp-worker
+      # The wasm core resolves the sibling crates and the path-included
+      # projector/gateway sources relative to the workspace — the same
+      # sibling layout the family keeps locally.
       - uses: actions/checkout@v4
         with:
           repository: unidpp/unidpp-core
           path: unidpp-core
+      - uses: actions/checkout@v4
+        with:
+          repository: unidpp/unidpp-cli
+          path: unidpp-cli
+      - uses: actions/checkout@v4
+        with:
+          repository: unidpp/unidpp-projector
+          path: unidpp-projector
+      - uses: actions/checkout@v4
+        with:
+          repository: unidpp/unidpp-gateway
+          path: unidpp-gateway
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
