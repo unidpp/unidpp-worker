@@ -41,6 +41,8 @@ export const ITEM_CLASSES = [
   "unit",
   "model",
   "cross-register-mapping",
+  "class-descriptor",
+  "instance",
 ];
 
 // The plural mount names the subregisters answer under.
@@ -53,7 +55,240 @@ const CLASS_PLURALS: Record<string, string> = {
   unit: "units",
   model: "models",
   "cross-register-mapping": "cross-register-mappings",
+  "class-descriptor": "class-descriptors",
+  instance: "instances",
 };
+
+// The R10 intake checks (clause 5): the class descriptor registers
+// only in its signed form and declares its shape; an instance
+// validates against the descriptor it names, point-in-time, and
+// every refusal names the failing fact path.
+
+const FACT_KINDS = ["string", "decimal", "boolean", "list"];
+const CAPABILITY_CLASSES = ["silent", "passive-auth", "logged-contact", "connected"];
+const ISSUER_CLASSES = ["law", "treaty", "consensus", "declaration", "attestation"];
+
+interface FeatureSpec {
+  path: string;
+  kind: string;
+  required: boolean;
+  vocabulary?: string[];
+  unit?: string;
+}
+
+const validFactPath = (path: string): boolean =>
+  path.length > 0 && path.split(".").every((segment) => segment.length > 0);
+
+export function parseFeatureSpecs(
+  manifest: Record<string, unknown>,
+): { ok: true; specs: FeatureSpec[] } | { ok: false; errors: string[] } {
+  const errors: string[] = [];
+  const raw = manifest["features"];
+  if (!Array.isArray(raw)) {
+    return {
+      ok: false,
+      errors: ["the descriptor declares its features as an array of feature specs"],
+    };
+  }
+  const specs: FeatureSpec[] = [];
+  raw.forEach((feature: Record<string, unknown>, index: number) => {
+    const at = `manifest.features[${index}]`;
+    const path = typeof feature["path"] === "string" ? feature["path"] : null;
+    if (!path) {
+      errors.push(`${at}.path: every feature names its dotted fact path`);
+      return;
+    }
+    if (!validFactPath(path)) {
+      errors.push(`${at}.path: \`${path}\` is not a fact path (dotted segments, no empty segment)`);
+    }
+    const kind = typeof feature["kind"] === "string" ? feature["kind"] : "";
+    if (!FACT_KINDS.includes(kind)) {
+      errors.push(`${at}.kind: \`${kind}\` is not a value kind (the closed set: ${FACT_KINDS.join(", ")})`);
+    }
+    const vocabulary = Array.isArray(feature["vocabulary"])
+      ? (feature["vocabulary"] as unknown[]).filter((v): v is string => typeof v === "string")
+      : undefined;
+    const unit = typeof feature["unit"] === "string" ? feature["unit"] : undefined;
+    if (vocabulary && kind !== "string") {
+      errors.push(`${at}.vocabulary: a vocabulary declares the range of a STRING feature`);
+    }
+    if (unit && kind !== "decimal") {
+      errors.push(`${at}.unit: a unit reference declares the unit of a DECIMAL feature`);
+    }
+    if (vocabulary && vocabulary.length === 0) {
+      errors.push(`${at}.vocabulary: a declared vocabulary states its members`);
+    }
+    if (unit !== undefined && !unit.trim()) {
+      errors.push(`${at}.unit: the unit reference is empty`);
+    }
+    specs.push({
+      path,
+      kind,
+      required: feature["required"] === true,
+      vocabulary,
+      unit,
+    });
+  });
+  const seen = new Set<string>();
+  for (const spec of specs) {
+    if (seen.has(spec.path)) {
+      errors.push(`manifest.features: the fact path \`${spec.path}\` is declared twice`);
+    }
+    seen.add(spec.path);
+  }
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, specs };
+}
+
+// The signed form a class descriptor registers under (the same
+// discipline a profile manifest carries; the cryptographic reading
+// is the trust service's).
+function descriptorSignatureErrors(manifest: Record<string, unknown>): string[] {
+  const errors: string[] = [];
+  const issuerClass = manifest["issuer_class"];
+  if (typeof issuerClass !== "string" || !ISSUER_CLASSES.includes(issuerClass)) {
+    errors.push(
+      `manifest.issuer_class: \`${String(issuerClass)}\` is not an issuer class (one of ${ISSUER_CLASSES.join(", ")})`,
+    );
+  }
+  const issuer = manifest["issuer"];
+  if (typeof issuer !== "string" || !issuer.trim()) {
+    errors.push("manifest.issuer: the issuing node's id is required (the signer of record)");
+  }
+  const signature = (manifest["signature"] as Record<string, unknown> | undefined)?.["signature"];
+  if (typeof signature !== "string" || !signature.trim()) {
+    errors.push(
+      "manifest.signature: class descriptors register only in their SIGNED form (a signature slot with a signature value)",
+    );
+  }
+  return errors;
+}
+
+function descriptorManifestErrors(
+  identifier: string,
+  manifest: Record<string, unknown>,
+): string[] {
+  const errors: string[] = [];
+  const classId = manifest["class_id"];
+  if (typeof classId !== "string" || !classId) {
+    errors.push("manifest.class_id: the descriptor states its class_id (the identifier names the class)");
+  } else if (classId !== identifier) {
+    errors.push(
+      `manifest.class_id: the descriptor's class_id \`${classId}\` must name the item itself (\`${identifier}\`)`,
+    );
+  }
+  const parsed = parseFeatureSpecs(manifest);
+  if (!parsed.ok) {
+    errors.push(...parsed.errors);
+  } else if (parsed.specs.length === 0) {
+    errors.push("manifest.features: a class descriptor declares at least one feature");
+  }
+  const capabilityClasses = manifest["capability_classes"];
+  if (!Array.isArray(capabilityClasses) || capabilityClasses.length === 0) {
+    errors.push(
+      "manifest.capability_classes: the descriptor states at least one capability class (S0-S3)",
+    );
+  } else {
+    capabilityClasses.forEach((token, index) => {
+      if (typeof token !== "string" || !CAPABILITY_CLASSES.includes(token)) {
+        errors.push(
+          `manifest.capability_classes[${index}]: \`${String(token)}\` is not a capability class (one of ${CAPABILITY_CLASSES.join(", ")})`,
+        );
+      }
+    });
+  }
+  const ruleReferences = manifest["rule_references"];
+  if (!Array.isArray(ruleReferences)) {
+    errors.push(
+      "manifest.rule_references: the descriptor states the rule references it relies on (an empty array declares none)",
+    );
+  } else {
+    ruleReferences.forEach((token, index) => {
+      if (typeof token !== "string" || !token.trim()) {
+        errors.push(`manifest.rule_references[${index}]: a rule reference is a non-empty rule id`);
+      }
+    });
+  }
+  return errors;
+}
+
+// The instance against its descriptor (point-in-time; the open map
+// rides unvalidated).
+function instanceErrors(
+  identifier: string,
+  manifest: Record<string, unknown>,
+  store: RegistryState,
+): string[] {
+  const errors: string[] = [];
+  const classId = typeof manifest["instance_of"] === "string" ? manifest["instance_of"].trim() : "";
+  if (!classId) {
+    errors.push(
+      "manifest.instance_of: the instance states the class it instantiates (the descriptor's identifier)",
+    );
+    return errors;
+  }
+  const descriptor = store.item(classId);
+  if (!descriptor || descriptor.item_class !== "class-descriptor" || !descriptor.manifest) {
+    errors.push(
+      descriptor
+        ? `manifest.instance_of: \`${classId}\` is registered as a ${descriptor.item_class}, not a class descriptor`
+        : `manifest.instance_of: unknown class \`${classId}\`: no registered class descriptor names it`,
+    );
+    return errors;
+  }
+  const parsed = parseFeatureSpecs(descriptor.manifest);
+  if (!parsed.ok) {
+    errors.push(
+      `manifest.instance_of: the class descriptor \`${classId}\` itself does not parse: ${parsed.errors.join("; ")}`,
+    );
+    return errors;
+  }
+  const features = (manifest["features"] ?? {}) as Record<string, unknown>;
+  const valueKind = (value: unknown): string | null => {
+    if (typeof value === "string") return "string";
+    if (typeof value === "boolean") return "boolean";
+    if (typeof value === "number") return "decimal";
+    if (Array.isArray(value) && value.every((v) => typeof v === "string")) return "list";
+    return null;
+  };
+  void identifier;
+  for (const spec of parsed.specs) {
+    const fact = features[spec.path];
+    if (fact === undefined || fact === null) {
+      if (spec.required) {
+        errors.push(
+          `manifest.features.${spec.path}: the class \`${classId}\` declares \`${spec.path}\` required; the instance states no fact at that path (missing-required)`,
+        );
+      }
+      continue;
+    }
+    const presented = valueKind(fact);
+    if (presented !== spec.kind) {
+      errors.push(
+        `manifest.features.${spec.path}: the fact presents as ${presented ?? "neither string, decimal, boolean nor a list of strings"}; the class \`${classId}\` declares \`${spec.kind}\` (wrong-kind)`,
+      );
+      continue;
+    }
+    if (spec.vocabulary) {
+      const member = fact as string;
+      if (!spec.vocabulary.includes(member)) {
+        errors.push(
+          `manifest.features.${spec.path}: \`${member}\` is outside the vocabulary the class \`${classId}\` declares (out-of-vocabulary; members: ${spec.vocabulary.join(", ")})`,
+        );
+      }
+    }
+  }
+  for (const spec of parsed.specs) {
+    if (!spec.unit) continue;
+    const unitItem = store.item(spec.unit);
+    if (!unitItem || unitItem.item_class !== "unit") {
+      errors.push(
+        `manifest.features.${spec.path}: the class \`${classId}\` declares unit \`${spec.unit}\` for \`${spec.path}\`, but no registered unit names it (unresolved-unit)`,
+      );
+    }
+  }
+  return errors;
+}
 
 export const STATUSES = ["valid", "superseded", "retired"];
 
@@ -328,6 +563,39 @@ export class RegistryDO {
     await this.state.load();
     const url = new URL(request.url);
     const path = url.pathname;
+    if (path === "/discovery" && request.method === "GET") {
+      const descriptors = this.state
+        .allItems()
+        .filter((i) => i.item_class === "class-descriptor")
+        .map((i) => {
+          const parsed = i.manifest ? parseFeatureSpecs(i.manifest) : null;
+          const specs = parsed && parsed.ok ? parsed.specs : [];
+          return {
+            class_id: i.identifier,
+            title: i.title,
+            register: i.register,
+            features: specs.map((f) => ({
+              path: f.path,
+              kind: f.kind,
+              required: f.required,
+              vocabulary: f.vocabulary ?? null,
+              unit: f.unit ?? null,
+            })),
+            subregister: "/class-descriptors",
+          };
+        });
+      return stamped(200, {
+        service: "unidpp-registry",
+        class_descriptors: descriptors,
+        subregisters: Object.fromEntries(
+          ITEM_CLASSES.map((c) => [
+            CLASS_PLURALS[c] ?? c,
+            { class: c, path: `/${CLASS_PLURALS[c] ?? c}` },
+          ]),
+        ),
+        as_of: isoNow(),
+      }, isoNow());
+    }
     if (path === "/healthz") {
       return new Response(JSON.stringify({ status: "ok" }), {
         headers: { "content-type": "application/json" },
@@ -439,6 +707,20 @@ export class RegistryDO {
         return badRequest("manifest `version` must be pinned to a registered version of the item");
       }
     }
+    // The class-scoped intake checks (clause 5; R10 B1 + B2): the
+    // descriptor's signed form and shape, the instance against its
+    // descriptor. Refusals name the failing paths.
+    if (itemClass === "class-descriptor" || itemClass === "instance") {
+      const scoped = itemClass === "class-descriptor"
+        ? [
+            ...descriptorSignatureErrors(manifest ?? {}),
+            ...descriptorManifestErrors(identifier, manifest ?? {}),
+          ]
+        : instanceErrors(identifier, manifest ?? {}, this.state);
+      if (scoped.length > 0) {
+        return badRequest(scoped.join("; "));
+      }
+    }
     const item: Item = {
       identifier,
       register,
@@ -524,6 +806,24 @@ export class RegistryDO {
       return badRequest(`\`${identifier}\` has no valid version to supersede`);
     }
     const manifest = (v.manifest as Record<string, unknown> | undefined) ?? undefined;
+    if (manifest) {
+      const pinned = manifest["version"];
+      if (pinned !== version) {
+        return badRequest("manifest `version` must be pinned to a registered version of the item");
+      }
+      // The same class-scoped checks gate a superseding manifest.
+      if (item.item_class === "class-descriptor" || item.item_class === "instance") {
+        const scoped = item.item_class === "class-descriptor"
+          ? [
+              ...descriptorSignatureErrors(manifest),
+              ...descriptorManifestErrors(identifier, manifest),
+            ]
+          : instanceErrors(identifier, manifest, this.state);
+        if (scoped.length > 0) {
+          return badRequest(scoped.join("; "));
+        }
+      }
+    }
     const asOf = new Date();
     const successor: ItemVersion = {
       version,
