@@ -199,7 +199,7 @@ export class IssuerDO {
   private list(): Response {
     const passports = [...this.passports.values()].map((record) => ({
       passport_id: record.document.passport_id,
-      identity: record.document.identity,
+      subject: record.document.product_id,
       audit_seq: record.audit_seq,
     }));
     return stamped(200, { count: passports.length, passports });

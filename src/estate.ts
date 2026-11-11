@@ -107,6 +107,7 @@ interface Env {
    * tenant is served from that tenant's own DO namespaces (each DO
    * id suffixed), its own journals, its own identity. */
   TENANT_HOSTS?: string;
+  UNIDPP_CONSOLE_ADMIN_TOKEN?: string;
   ARCHIVE_BUCKET?: { put(key: string, value: string): Promise<unknown>; get(key: string): Promise<{ text(): Promise<string> } | null> };
 }
 
@@ -215,6 +216,23 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
   if (renderRest && /^\/(en18222|untp)\//.test(renderRest)) {
     const { render } = await import("./render");
     return render(renderRest, request, { ISSUER: env?.ISSUER });
+  }
+  // The console surface (REARCH R12 S5-serve): the operator pages
+  // computed from the estate's own state, session-gated where an
+  // admin token is configured.
+  const consoleRest = pathname === "/console" ? "/" : pathname.startsWith("/console/") ? pathname.slice("/console".length) : null;
+  // The pinned contract rides the module loop (the golden and the
+  // health probe answer before the console's own pages).
+  if (consoleRest !== null && consoleRest !== "/openapi.yaml" && consoleRest !== "/healthz") {
+    const { consoleSurface } = await import("./console");
+    return consoleSurface(consoleRest, request, {
+      ISSUER: env?.ISSUER,
+      REGISTRY: env?.REGISTRY,
+      TRUST: env?.TRUST,
+      ARCHIVE: env?.ARCHIVE,
+      UNIDPP_CONSOLE_ADMIN_TOKEN: env?.UNIDPP_CONSOLE_ADMIN_TOKEN,
+      TENANT_HOSTS: env?.TENANT_HOSTS,
+    });
   }
   const issuerRest = pathname.startsWith("/issuer/") ? pathname.slice("/issuer".length) : null;
   const issuerData = issuerRest?.match(/^\/(passports|admin|events)($|\/)/);
