@@ -356,3 +356,102 @@ pub unsafe extern "C" fn unidpp_mint_passport(
     }
     0
 }
+
+// ---------------------------------------------------------------------------
+// The translation hub boundary (REARCH R12 S5): the relay core of the
+// signatif crate itself — willingness both ways, the canonical relay
+// payload, the HUB-RELAY signature. The hub carries no storage; the
+// caller supplies the declarations and the evidence.
+// ---------------------------------------------------------------------------
+
+use unidpp_signatif::declaration::DeclarationSet;
+use unidpp_signatif::transport::Hub;
+
+fn declaration_set_from_json(text: &str) -> Result<DeclarationSet, &'static str> {
+    let set: DeclarationSet =
+        serde_json::from_str(text).map_err(|_| "the declarations do not deserialize")?;
+    Ok(set)
+}
+
+/// Relay the evidence: willingness is checked both ways, the payload
+/// is canonical and signed in the HUB-RELAY domain. Returns the
+/// RelayedEvidence JSON, or a negative code (the refusal text rides
+/// the note buffer).
+///
+/// # Safety
+/// All pointers name readable memory of the stated lengths.
+#[no_mangle]
+pub unsafe extern "C" fn unidpp_hub_relay(
+    hub_id_ptr: *const u8,
+    hub_id_len: usize,
+    evidence_ptr: *const u8,
+    evidence_len: usize,
+    from_ptr: *const u8,
+    from_len: usize,
+    to_ptr: *const u8,
+    to_len: usize,
+    data_class_ptr: *const u8,
+    data_class_len: usize,
+    seed_ptr: *const u8,
+    declarations_ptr: *const u8,
+    declarations_len: usize,
+) -> i32 {
+    let read = |ptr: *const u8, len: usize| -> String {
+        String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned()
+    };
+    let hub_id = read(hub_id_ptr, hub_id_len);
+    let evidence = std::slice::from_raw_parts(evidence_ptr, evidence_len).to_vec();
+    let from = read(from_ptr, from_len);
+    let to = read(to_ptr, to_len);
+    let data_class = read(data_class_ptr, data_class_len);
+    let seed = std::slice::from_raw_parts(seed_ptr, 32);
+    let declarations = read(declarations_ptr, declarations_len);
+    let Ok(key) = operator_key(seed) else {
+        return -1;
+    };
+    let Ok(set) = declaration_set_from_json(&declarations) else {
+        return -2;
+    };
+    let hub = Hub { hub_id };
+    match hub.relay(&evidence, &from, &to, &data_class, &set, &key) {
+        Ok(relayed) => {
+            // The signature slot's hex form rides the JSON the TS side
+            // stores (the relayed evidence's own serde form).
+            match serde_json::to_string(&relayed) {
+                Ok(text) => {
+                    unsafe {
+                        DEBUG_TEXT = Some(text);
+                    }
+                    0
+                }
+                Err(_) => -3,
+            }
+        }
+        Err(e) => {
+            unsafe {
+                DEBUG_TEXT = Some(format!("refused: {e}"));
+            }
+            -4
+        }
+    }
+}
+
+static mut DEBUG_TEXT: Option<String> = None;
+
+/// The last note's bytes (a JSON document or a refusal), written to
+/// `out`; returns the length.
+///
+/// # Safety
+/// `out` names 4096 writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn unidpp_note_take(out: *mut u8) -> i32 {
+    match unsafe { DEBUG_TEXT.take() } {
+        Some(text) => {
+            let bytes = text.as_bytes();
+            let len = bytes.len().min(4096);
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, len);
+            len as i32
+        }
+        None => -1,
+    }
+}

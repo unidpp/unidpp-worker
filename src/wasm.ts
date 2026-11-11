@@ -42,6 +42,22 @@ export interface CoreExports {
   ) => number;
   unidpp_debug_note: () => number;
   unidpp_debug_parse_identity: (id: number, idLen: number) => number;
+  unidpp_hub_relay: (
+    hubId: number,
+    hubIdLen: number,
+    evidence: number,
+    evidenceLen: number,
+    from: number,
+    fromLen: number,
+    to: number,
+    toLen: number,
+    dataClass: number,
+    dataClassLen: number,
+    seed: number,
+    declarations: number,
+    declarationsLen: number,
+  ) => number;
+  unidpp_note_take: (out: number) => number;
   unidpp_sth_verify: (
     publicKey: number,
     logId: number,
