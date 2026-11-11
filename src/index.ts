@@ -5,9 +5,12 @@
 import wasmInstance from "../src/core_bg.wasm";
 import { CoreExports } from "./wasm";
 import { handle, useCore } from "./estate";
+import { RegistryDO } from "./registry-do";
+
+export { RegistryDO };
 
 export default {
-  async fetch(request: Request, _env: unknown, _ctx: unknown): Promise<Response> {
+  async fetch(request: Request, env: unknown, _ctx: unknown): Promise<Response> {
     const wasm: unknown = wasmInstance;
     const candidate = (wasm as { exports?: CoreExports }).exports;
     if (candidate) {
@@ -15,6 +18,6 @@ export default {
     } else {
       useCore(wasm as CoreExports);
     }
-    return handle(request);
+    return handle(request, env as Parameters<typeof handle>[1]);
   },
 };

@@ -3,6 +3,10 @@
   "name": "unidpp",
   "main": "src/index.ts",
   "compatibility_date": "2026-11-01",
+  "durable_objects": {
+    "bindings": [{ "name": "REGISTRY", "class_name": "RegistryDO" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RegistryDO"] }],
   "build": {
     "command": "npm run build:wasm"
   },

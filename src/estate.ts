@@ -89,8 +89,33 @@ export function coreDigest(data: Uint8Array): string {
   return digestHex(core(), data);
 }
 
-export async function handle(request: Request): Promise<Response> {
+interface Env {
+  REGISTRY?: { idFromName(name: string): { toString(): string }; get(id: unknown): { fetch(request: Request): Promise<Response> } };
+}
+
+export async function handle(request: Request, env?: Env): Promise<Response> {
   const { pathname } = new URL(request.url);
+  // The registry rides its Durable Object (REARCH R12 S2): every
+  // request under the prefix is served by the estate's one DO.
+  const registryRest = pathname.startsWith("/registry/")
+    ? pathname.slice("/registry".length)
+    : null;
+  // The DATA surface rides the Durable Object (REARCH R12 S2); the
+  // contract and health answers stay the embedded goldens.
+  const registryData = registryRest?.match(/^\/(items|applicability|admin|models)($|\/)/);
+  if (registryRest && registryData) {
+    if (!env?.REGISTRY) {
+      return new Response(
+        JSON.stringify({ error: "the registry Durable Object is not bound" }),
+        { status: 503, headers: { "content-type": "application/json" } },
+      );
+    }
+    const id = env.REGISTRY.idFromName("estate");
+    const stub = env.REGISTRY.get(id);
+    const inner = new URL(request.url);
+    inner.pathname = registryRest;
+    return stub.fetch(new Request(inner.toString(), request));
+  }
   switch (pathname) {
     case "/healthz":
       return json({ status: "ok" });
