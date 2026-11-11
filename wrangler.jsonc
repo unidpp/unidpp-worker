@@ -4,9 +4,13 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-11-01",
   "durable_objects": {
-    "bindings": [{ "name": "REGISTRY", "class_name": "RegistryDO" }]
+    "bindings": [
+      { "name": "REGISTRY", "class_name": "RegistryDO" },
+      { "name": "LOG", "class_name": "LogDO" },
+      { "name": "TRUST", "class_name": "TrustDO" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RegistryDO"] }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RegistryDO", "LogDO", "TrustDO"] }],
   "build": {
     "command": "npm run build:wasm"
   },

@@ -1,0 +1,9 @@
+/Users/mulgogi/src/unidpp/unidpp-worker/wasm/core/target/wasm32-unknown-unknown/debug/deps/js_sys-ba09a9306761bfc4.d: /Users/mulgogi/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.107/src/lib.rs /Users/mulgogi/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.107/src/futures/mod.rs /Users/mulgogi/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.107/src/futures/jspi.rs /Users/mulgogi/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.107/src/futures/queue.rs /Users/mulgogi/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.107/src/futures/task/singlethread.rs
+
+/Users/mulgogi/src/unidpp/unidpp-worker/wasm/core/target/wasm32-unknown-unknown/debug/deps/libjs_sys-ba09a9306761bfc4.rmeta: /Users/mulgogi/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.107/src/lib.rs /Users/mulgogi/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.107/src/futures/mod.rs /Users/mulgogi/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.107/src/futures/jspi.rs /Users/mulgogi/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.107/src/futures/queue.rs /Users/mulgogi/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.107/src/futures/task/singlethread.rs
+
+/Users/mulgogi/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.107/src/lib.rs:
+/Users/mulgogi/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.107/src/futures/mod.rs:
+/Users/mulgogi/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.107/src/futures/jspi.rs:
+/Users/mulgogi/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.107/src/futures/queue.rs:
+/Users/mulgogi/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.107/src/futures/task/singlethread.rs:

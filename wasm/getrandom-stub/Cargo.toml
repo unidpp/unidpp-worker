@@ -1,0 +1,12 @@
+[package]
+name = "getrandom"
+version = "0.2.17"
+edition = "2021"
+description = "Wasm build shim for the unidpp-core-wasm binding: the deterministic signing paths never reach OsRng, so the shim fills zeros and the module carries no imports"
+license = "Apache-2.0"
+
+[lib]
+
+[features]
+std = []
+default = []

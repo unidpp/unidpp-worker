@@ -226,6 +226,11 @@ interface StoreLike {
   list(options: { prefix: string }): Promise<Map<string, unknown>>;
 }
 
+export interface Journal {
+  append(op: JournalOp): Promise<number>;
+  all(): Promise<JournalOp[]>;
+}
+
 // The journal: appended ops, replayed in order.
 export class RegistryState {
   private items = new Map<string, Item>();

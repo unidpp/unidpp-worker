@@ -7,6 +7,28 @@ export interface CoreExports {
   unidpp_alloc: (len: number) => number;
   unidpp_free: (ptr: number, len: number) => void;
   unidpp_sha256: (ptr: number, len: number, out: number) => void;
+  unidpp_head_public: (seed: number, out: number) => number;
+  unidpp_head_key_id: (seed: number, out: number) => number;
+  unidpp_sth_sign: (
+    seed: number,
+    logId: number,
+    logIdLen: number,
+    treeSize: bigint,
+    secs: bigint,
+    nanos: number,
+    root: number,
+    sigOut: number,
+  ) => number;
+  unidpp_sth_verify: (
+    publicKey: number,
+    logId: number,
+    logIdLen: number,
+    treeSize: bigint,
+    secs: bigint,
+    nanos: number,
+    root: number,
+    signature: number,
+  ) => number;
 }
 
 export function digestHex(core: CoreExports, data: Uint8Array): string {

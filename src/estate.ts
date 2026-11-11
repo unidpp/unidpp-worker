@@ -89,8 +89,15 @@ export function coreDigest(data: Uint8Array): string {
   return digestHex(core(), data);
 }
 
+interface DoNamespace {
+  idFromName(name: string): { toString(): string };
+  get(id: unknown): { fetch(request: Request): Promise<Response> };
+}
+
 interface Env {
-  REGISTRY?: { idFromName(name: string): { toString(): string }; get(id: unknown): { fetch(request: Request): Promise<Response> } };
+  REGISTRY?: DoNamespace;
+  LOG?: DoNamespace;
+  TRUST?: DoNamespace;
 }
 
 export async function handle(request: Request, env?: Env): Promise<Response> {
@@ -114,6 +121,36 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
     const stub = env.REGISTRY.get(id);
     const inner = new URL(request.url);
     inner.pathname = registryRest;
+    return stub.fetch(new Request(inner.toString(), request));
+  }
+  // The transparency log and the trust surface ride their own
+  // Durable Objects (REARCH R12 S3).
+  const logRest = pathname.startsWith("/log/") ? pathname.slice("/log".length) : null;
+  const logData = logRest?.match(/^\/(commitments|receipt|tree|admin)($|\/)/);
+  if (logRest && logData) {
+    if (!env?.LOG) {
+      return new Response(
+        JSON.stringify({ error: "the log Durable Object is not bound" }),
+        { status: 503, headers: { "content-type": "application/json" } },
+      );
+    }
+    const stub = env.LOG.get(env.LOG.idFromName("estate"));
+    const inner = new URL(request.url);
+    inner.pathname = logRest;
+    return stub.fetch(new Request(inner.toString(), request));
+  }
+  const trustRest = pathname.startsWith("/trust/") ? pathname.slice("/trust".length) : null;
+  const trustData = trustRest?.match(/^\/(keyring|verify|graph|anchors)($|\/)/);
+  if (trustRest && trustData) {
+    if (!env?.TRUST) {
+      return new Response(
+        JSON.stringify({ error: "the trust Durable Object is not bound" }),
+        { status: 503, headers: { "content-type": "application/json" } },
+      );
+    }
+    const stub = env.TRUST.get(env.TRUST.idFromName("estate"));
+    const inner = new URL(request.url);
+    inner.pathname = trustRest;
     return stub.fetch(new Request(inner.toString(), request));
   }
   switch (pathname) {
