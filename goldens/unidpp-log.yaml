@@ -1,0 +1,130 @@
+components: {}
+info:
+  description: 'Transparency-log anchor of the UniDPP family: the service sequences subject commitments into an RFC 6962-style Merkle tree, signs an append-time tree head that is monotonic in size, returns signed inclusion receipts and consistency proofs, re-serves receipts byte-identically, and anchors every head with an external RFC 3161 time-stamp authority where one is configured. The log exposes no enumeration surface: it is verifiable without being browsable. Appends require `Authorization: Bearer <UNIDPP_LOG_APPEND_TOKEN>` where an append token is configured.'
+  license:
+    identifier: Apache-2.0
+    name: Apache-2.0
+  title: UniDPP log
+  version: 0.1.0
+  x-unidpp-env-keys:
+  - UNIDPP_LOG_BIND
+  - UNIDPP_LOG_ID
+  - UNIDPP_LOG_SUITE
+  - UNIDPP_LOG_SEED
+  - UNIDPP_LOG_APPEND_TOKEN
+  - UNIDPP_LOG_STATE_FILE
+  - UNIDPP_LOG_EXTERNAL_TSA_URL
+openapi: 3.1.0
+paths:
+  /:
+    get:
+      operationId: discovery
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: 'The discovery document: the log identity and version, the operator public key with its key id and fingerprint, the endpoint references, the receipt-verification steps, the sequencing and enumeration invariants, and the quorum posture'
+      summary: Serve the discovery document.
+      tags:
+      - log
+  /commitments:
+    post:
+      operationId: commit
+      requestBody:
+        content:
+          application/json:
+            schema: {}
+        description: '`{{"subject": ..., "commitment": <64-character hex SHA-256 value>, "salt_ref": <unsigned integer, optional>}}`'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema: {}
+          description: 'The commitment is sequenced and the signed inclusion receipt is stated: leaf index, Merkle path and the append-time signed tree head, verifiable against the operator public key published in the discovery document'
+        '400':
+          description: Invalid JSON, a missing or oversized `subject`, a commitment that is not a 64-character hex SHA-256 value, or a `salt_ref` that is not an unsigned integer
+        '401':
+          description: An append token is configured and the request does not carry it
+        '500':
+          description: The journal rejected the append (a storage failure)
+      summary: |-
+        Sequence a subject commitment and return the signed inclusion
+        receipt.
+      tags:
+      - log
+  /healthz:
+    get:
+      operationId: healthz
+      responses:
+        '200':
+          description: The service is serving
+      summary: Liveness probe.
+      tags:
+      - log
+  /receipt/{seq}:
+    get:
+      operationId: receipt
+      parameters:
+      - description: The sequence number of the receipt (an unsigned integer)
+        in: path
+        name: seq
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: The receipt, byte-identical to the one returned by the append that produced the sequence number
+        '400':
+          description: The sequence number is not an unsigned integer
+        '404':
+          description: No receipt exists for the sequence number
+      summary: |-
+        Re-serve a receipt byte-identically (derived state, deterministic
+        under journal replay).
+      tags:
+      - log
+  /tree/consistency:
+    get:
+      operationId: tree_consistency
+      parameters:
+      - description: The pinned prefix size (an unsigned integer); the proof ties that prefix to the current head
+        in: query
+        name: from
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: 'The consistency proof: the old and new sizes and roots and the audit path, verifiable against a previously pinned root and the current head''s root'
+        '400':
+          description: A missing `from`, a `from` that is not an unsigned integer, or a `from` larger than the current tree size
+      summary: |-
+        The consistency proof from a pinned prefix to the current head
+        (what lets a receipt stay valid as the tree grows).
+      tags:
+      - log
+  /tree/head:
+    get:
+      operationId: tree_head
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: The latest signed tree head with its external RFC 3161 anchor state; for an empty log the head carries tree size zero and null timestamp, root and signature
+      summary: |-
+        The latest signed tree head (append-time checkpoint, monotonic in
+        size, byte-identical across restarts).
+      tags:
+      - log
+tags:
+- description: 'The transparency-log surface: discovery, commitment sequencing, signed tree heads, consistency proofs and receipts'
+  name: log

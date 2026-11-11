@@ -1,0 +1,26 @@
+[package]
+name = "unidpp-worker"
+version = "0.1.0"
+edition = "2021"
+description = "UniDPP on Cloudflare Workers: the union surface of the one deployment, native to the edge (REARCH R12)"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+worker = { version = "0.8", features = ["http"] }
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"
+serde_json = "1"
+serde_yaml = "0.9"
+
+# The core of the estate, compiled to wasm as libraries — the same
+# algorithms the native binaries carry (R12: the vectors stay
+# byte-identical).
+unidpp-model = { path = "../unidpp-core/crates/model" }
+unidpp-event = { path = "../unidpp-core/crates/event" }
+unidpp-verdict = { path = "../unidpp-core/crates/verdict" }
+
+[profile.release]
+opt-level = "s"
