@@ -43,7 +43,7 @@ export function mountWorkerCore(use: (instance: CoreExports) => void): void {
   // is the whole ceremony.
   const asModule = wasm as WebAssemblyModule;
   if (typeof asModule.exports === "function" || (wasm as { constructor?: { name?: string } }).constructor?.name === "WebAssemblyModule" || isModuleLike(wasm)) {
-    const instance = new WebAssembly.Instance(wasm as unknown as WebAssembly.Module, []);
+    const instance = new WebAssembly.Instance(wasm as unknown as WebAssembly.Module, {} as WebAssembly.Imports);
     mounted = instance.exports as unknown as CoreExports;
     use(mounted);
     return;

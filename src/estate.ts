@@ -98,6 +98,9 @@ interface Env {
   REGISTRY?: DoNamespace;
   LOG?: DoNamespace;
   TRUST?: DoNamespace;
+  ISSUER?: DoNamespace;
+  ARCHIVE?: DoNamespace;
+  ARCHIVE_BUCKET?: { put(key: string, value: string): Promise<unknown>; get(key: string): Promise<{ text(): Promise<string> } | null> };
 }
 
 export async function handle(request: Request, env?: Env): Promise<Response> {
@@ -137,6 +140,34 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
     const stub = env.LOG.get(env.LOG.idFromName("estate"));
     const inner = new URL(request.url);
     inner.pathname = logRest;
+    return stub.fetch(new Request(inner.toString(), request));
+  }
+  const issuerRest = pathname.startsWith("/issuer/") ? pathname.slice("/issuer".length) : null;
+  const issuerData = issuerRest?.match(/^\/(passports|admin|events)($|\/)/);
+  if (issuerRest && issuerData) {
+    if (!env?.ISSUER) {
+      return new Response(
+        JSON.stringify({ error: "the issuer Durable Object is not bound" }),
+        { status: 503, headers: { "content-type": "application/json" } },
+      );
+    }
+    const stub = env.ISSUER.get(env.ISSUER.idFromName("estate"));
+    const inner = new URL(request.url);
+    inner.pathname = issuerRest;
+    return stub.fetch(new Request(inner.toString(), request));
+  }
+  const archiveRest = pathname.startsWith("/archive/") ? pathname.slice("/archive".length) : null;
+  const archiveData = archiveRest?.match(/^\/(snapshots|admin)($|\/)/);
+  if (archiveRest && archiveData) {
+    if (!env?.ARCHIVE) {
+      return new Response(
+        JSON.stringify({ error: "the archive Durable Object is not bound" }),
+        { status: 503, headers: { "content-type": "application/json" } },
+      );
+    }
+    const stub = env.ARCHIVE.get(env.ARCHIVE.idFromName("estate"));
+    const inner = new URL(request.url);
+    inner.pathname = archiveRest;
     return stub.fetch(new Request(inner.toString(), request));
   }
   const trustRest = pathname.startsWith("/trust/") ? pathname.slice("/trust".length) : null;

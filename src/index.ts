@@ -6,10 +6,12 @@ import { handle, useCore } from "./estate";
 import { RegistryDO } from "./registry-do";
 import { LogDO } from "./log-do";
 import { TrustDO } from "./trust-do";
+import { IssuerDO } from "./issuer-do";
+import { ArchiveDO } from "./archive-do";
 import { mountWorkerCore, useWorkerCore } from "./mount";
 import { CoreExports } from "./wasm";
 
-export { RegistryDO, LogDO, TrustDO };
+export { RegistryDO, LogDO, TrustDO, IssuerDO, ArchiveDO };
 
 export default {
   async fetch(request: Request, env: unknown, _ctx: unknown): Promise<Response> {

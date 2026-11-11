@@ -7,10 +7,13 @@
     "bindings": [
       { "name": "REGISTRY", "class_name": "RegistryDO" },
       { "name": "LOG", "class_name": "LogDO" },
-      { "name": "TRUST", "class_name": "TrustDO" }
+      { "name": "TRUST", "class_name": "TrustDO" },
+      { "name": "ISSUER", "class_name": "IssuerDO" },
+      { "name": "ARCHIVE", "class_name": "ArchiveDO" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RegistryDO", "LogDO", "TrustDO"] }],
+  "r2_buckets": [{ "binding": "ARCHIVE_BUCKET", "bucket_name": "unidpp-archive" }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RegistryDO", "LogDO", "TrustDO", "IssuerDO", "ArchiveDO"] }],
   "build": {
     "command": "npm run build:wasm"
   },

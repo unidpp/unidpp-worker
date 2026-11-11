@@ -12,9 +12,10 @@ crate-type = ["cdylib", "rlib"]
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+unidpp-event = { path = "../../../unidpp-core/crates/event" }
 unidpp-model = { path = "../../../unidpp-core/crates/model" }
 unidpp-signatif = { path = "../../../unidpp-signatif" }
-unidpp-cli = { path = "../../../unidpp-cli" }
 
 # The wasm target: getrandom 0.2 (a transitive dep of the signing
 # stack) needs its js bindings on unknown-unknown.

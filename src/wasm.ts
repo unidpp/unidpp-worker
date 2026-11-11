@@ -19,6 +19,29 @@ export interface CoreExports {
     root: number,
     sigOut: number,
   ) => number;
+  unidpp_mint_passport: (
+    id: number,
+    idLen: number,
+    granularity: number,
+    granularityLen: number,
+    capability: number,
+    capabilityLen: number,
+    passportId: number,
+    passportIdLen: number,
+    validFromSecs: bigint,
+    outLen: number,
+    err: number,
+  ) => number;
+  unidpp_sign_raw: (
+    seed: number,
+    domain: number,
+    domainLen: number,
+    payload: number,
+    payloadLen: number,
+    sigOut: number,
+  ) => number;
+  unidpp_debug_note: () => number;
+  unidpp_debug_parse_identity: (id: number, idLen: number) => number;
   unidpp_sth_verify: (
     publicKey: number,
     logId: number,
