@@ -55,7 +55,9 @@ export interface SnapshotRecord {
 }
 
 interface LogNamespace {
-  fetch(request: Request): Promise<Response>;
+  idFromName?(name: string): unknown;
+  get?(id: unknown): { fetch(request: Request): Promise<Response> };
+  fetch?(request: Request): Promise<Response>;
 }
 
 export class ArchiveDO {
@@ -189,7 +191,13 @@ export class ArchiveDO {
       receipt: "the log Durable Object is not bound",
     };
     if (this.env.LOG) {
-      const response = await this.env.LOG.fetch(
+      // workerd hands the namespace; the tests hand a LogDO itself
+      // (the in-process bridge in both worlds).
+      const log = this.env.LOG;
+      const logStub = log.get
+        ? log.get(log.idFromName!("estate"))
+        : { fetch: log.fetch!.bind(log) };
+      const response = await logStub.fetch(
         new Request("https://do.internal/commitments", {
           method: "POST",
           body: JSON.stringify({
