@@ -11,6 +11,7 @@ import path from "node:path";
 import { CoreExports } from "../src/wasm";
 import { useWorkerCore } from "../src/mount";
 import { RegistryDO } from "../src/registry-do";
+import { handle } from "../src/estate";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const bytes = readFileSync(path.join(HERE, "..", "src", "core_bg.wasm"));
@@ -167,6 +168,23 @@ describe("the class descriptor intake", () => {
     expect(served.status).toBe(400);
     const body = (await served.json()) as { error: string };
     expect(body.error).toContain("is not a value kind");
+  });
+});
+
+describe("the estate routes the registry's discovery", () => {
+  it("serves /registry/discovery through the estate", async () => {
+    const registry = new RegistryDO(storage());
+    await registerDescriptor(registry);
+    const response = await handle(new Request("https://unidpp.workers.dev/registry/discovery"), {
+      REGISTRY: {
+        idFromName: (n: string) => n,
+        get: () => ({ fetch: registry.fetch.bind(registry) }),
+      },
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { class_descriptors: { class_id: string }[] };
+    expect(body.class_descriptors).toHaveLength(1);
+    expect(body.class_descriptors[0].class_id).toBe("tyre-e8");
   });
 });
 
