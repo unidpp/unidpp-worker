@@ -27,11 +27,6 @@ export interface Item {
   manifest?: Record<string, unknown>;
 }
 
-export interface JournalOp {
-  op: string;
-  [key: string]: unknown;
-}
-
 export const ITEM_CLASSES = [
   "data-element",
   "profile",
@@ -60,6 +55,8 @@ const CLASS_PLURALS: Record<string, string> = {
 };
 
 import { evalRule, parseRule, ruleDescriptorErrors } from "./rules";
+import { SqlJournal, MapJournal, type Journal, type JournalOp } from "./journal";
+export type { JournalOp };
 
 // The R10 intake checks (clause 5): the class descriptor registers
 // only in its signed form and declares its shape; an instance
@@ -482,70 +479,7 @@ function parseAt(params: URLSearchParams): { at: Date | null; asOf: Date } {
   return { at, asOf: at };
 }
 
-// The journal abstraction: append-only ops, replayed in order.
-// workerd's SQLite-backed DO storage carries the sql API; the tests
-// ride a plain map with the same contract.
-export interface Journal {
-  append(op: JournalOp): Promise<number>;
-  all(): Promise<JournalOp[]>;
-}
-
-class SqlJournal implements Journal {
-  private sql: {
-    exec(query: string, ...params: unknown[]): { toArray(): unknown[] };
-  };
-  constructor(storage: { sql: unknown }) {
-    this.sql = storage.sql as typeof this.sql;
-    this.sql.exec(
-      "CREATE TABLE IF NOT EXISTS journal (seq INTEGER PRIMARY KEY, line TEXT)",
-    );
-  }
-  async append(op: JournalOp): Promise<number> {
-    const next = this.sql.exec("SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM journal")
-      .toArray()[0] as { seq: number };
-    this.sql.exec("INSERT INTO journal (seq, line) VALUES (?, ?)", next.seq, JSON.stringify(op));
-    return next.seq as number;
-  }
-  async all(): Promise<JournalOp[]> {
-    return this.sql
-      .exec("SELECT line FROM journal ORDER BY seq")
-      .toArray()
-      .map((row) => JSON.stringify((row as { line: string }).line))
-      .map((line) => JSON.parse(line) as JournalOp);
-  }
-}
-
-class MapJournal implements Journal {
-  private ops: JournalOp[] = [];
-  constructor(private readonly storage: StoreLike) {}
-  async append(op: JournalOp): Promise<number> {
-    this.ops.push(op);
-    await this.storage.put(`journal:${String(this.ops.length).padStart(6, "0")}`, op);
-    return this.ops.length;
-  }
-  async all(): Promise<JournalOp[]> {
-    const stored = await this.storage.list({ prefix: "journal:" });
-    if (stored.size > 0) {
-      this.ops = [...stored.entries()]
-        .sort()
-        .map(([, value]) => value as JournalOp);
-    }
-    return this.ops;
-  }
-}
-
-interface StoreLike {
-  put(key: string, value: unknown): Promise<void>;
-  get(key: string): Promise<unknown>;
-  list(options: { prefix: string }): Promise<Map<string, unknown>>;
-}
-
-export interface Journal {
-  append(op: JournalOp): Promise<number>;
-  all(): Promise<JournalOp[]>;
-}
-
-// The journal: appended ops, replayed in order.
+// The register's state: the journal's ops replayed in order.
 export class RegistryState {
   private items = new Map<string, Item>();
   private seq = 0;
@@ -634,7 +568,7 @@ export class RegistryDO {
     const sql = (source as { sql?: unknown }).sql;
     const journal: Journal = sql
       ? new SqlJournal(source as { sql: unknown })
-      : new MapJournal(source as StoreLike);
+      : new MapJournal(source as { put(key: string, value: unknown): Promise<void>; get(key: string): Promise<unknown>; list(options: { prefix: string }): Promise<Map<string, unknown>> });
     this.state = new RegistryState(journal);
   }
 

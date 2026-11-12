@@ -14,6 +14,7 @@ export interface Journal {
 }
 
 export class SqlJournal implements Journal {
+  readonly kind = "sql";
   private sql: {
     exec(query: string, ...params: unknown[]): { toArray(): unknown[] };
   };
@@ -35,10 +36,17 @@ export class SqlJournal implements Journal {
     return next.seq as number;
   }
   async all(): Promise<JournalOp[]> {
-    return this.sql
-      .exec("SELECT line FROM journal ORDER BY seq")
-      .toArray()
-      .map((row) => JSON.parse((row as { line: string }).line) as JournalOp);
+    const rows = this.sql.exec("SELECT line FROM journal ORDER BY seq").toArray();
+    const ops: JournalOp[] = [];
+    for (const row of rows) {
+      const text = typeof row === "string" ? row : String((row as { line?: unknown }).line ?? "");
+      let value: unknown = text;
+      for (let i = 0; i < 3 && typeof value === "string"; i += 1) {
+        value = JSON.parse(value);
+      }
+      ops.push(value as JournalOp);
+    }
+    return ops;
   }
 }
 
