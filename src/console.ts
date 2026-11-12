@@ -282,17 +282,106 @@ async function page(pathname: string, request: Request, env: ConsoleEnv): Promis
       return htmlResponse(html("Feedback", "feedback", note));
     }
     case "/coverage": {
-      const form = `<p>The coverage report computes per passport and profile through the views surface:</p>
-<form method="get" action="/views/view"><input name="passport" placeholder="passport id"><input name="profile" placeholder="profile id"><button type="submit">view</button></form>`;
-      return htmlResponse(html("Coverage", "coverage", form));
+      // The journey computes: the views surface runs in process.
+      const passport = new URL(request.url).searchParams.get("passport")?.trim();
+      const profile = new URL(request.url).searchParams.get("profile")?.trim();
+      const form = `<form method="get" action="/console/coverage"><input name="passport" value="${esc(passport ?? "")}" placeholder="passport id"><input name="profile" value="${esc(profile ?? "")}" placeholder="profile id"><button type="submit">compute the coverage</button></form>`;
+      let body = form;
+      if (passport && profile) {
+        const { view } = await import("./views");
+        const response = await view(
+          new Request(`https://console.unidpp.org/views/view?passport=${encodeURIComponent(passport)}&profile=${encodeURIComponent(profile)}&actor=console-journey`),
+          { ISSUER: env.ISSUER, REGISTRY: env.REGISTRY },
+        );
+        if (response.status === 200) {
+          const report = (await response.json()) as {
+            coverage?: { complete?: boolean; elements_present?: number; elements_required?: number; missing?: { element?: string; reason?: string }[] };
+            passport?: { source?: string };
+            as_of?: string;
+          };
+          const coverage = report.coverage ?? {};
+          body = form +
+            `<p class="pass">Complete: ${esc(coverage.complete ?? false)} — ${esc(coverage.elements_present ?? 0)}/${esc(coverage.elements_required ?? 0)} elements present (source ${esc(report.passport?.source ?? "")}, as-of ${esc(report.as_of ?? "")}).</p>` +
+            (coverage.missing?.length
+              ? `<table><thead><tr><th>missing element</th><th>reason</th></tr></thead><tbody>${coverage.missing
+                  .map((m) => `<tr><td>${esc(m.element ?? "")}</td><td>${esc(m.reason ?? "")}</td></tr>`)
+                  .join("")}</tbody></table>`
+              : "");
+        } else {
+          const refused = (await response.json()) as Record<string, unknown>;
+          body = form + `<p class="fail">The view refused (HTTP ${esc(response.status)}): ${esc(String(refused.error ?? ""))}</p>`;
+        }
+      }
+      return htmlResponse(html("Coverage", "coverage", body));
     }
     case "/declarations": {
-      const note = `<p>The signed declarations ride the issuer surface's event log; the relay mints the cross-organization declarations.</p>`;
-      return htmlResponse(html("Declarations", "declarations", note));
+      // The journey computes: the relay runs in process (the
+      // declaration issue, the willingness checks, the receipt or
+      // the honest refusal).
+      let body = `<form method="post" action="/console/declarations">
+<input name="hub_id" placeholder="hub id (default unidpp-hub)">
+<input name="evidence_hex" placeholder="the declaration evidence, hex">
+<button type="submit">relay the declaration</button>
+</form>`;
+      if (request.method === "POST") {
+        let form: FormData;
+        try {
+          form = (await request.formData()) as FormData;
+        } catch {
+          form = new FormData();
+        }
+        const { relay } = await import("./hub");
+        const response = await relay(
+          new Request("https://console.unidpp.org/relay/relay", {
+            method: "POST",
+            body: JSON.stringify({
+              hub_id: String(form.get("hub_id") ?? "").trim() || "unidpp-hub",
+              evidence_hex: String(form.get("evidence_hex") ?? "").trim(),
+            }),
+          }),
+        );
+        const outcome = (await response.json()) as Record<string, unknown>;
+        body += `<pre>${esc(JSON.stringify(outcome, null, 2))}</pre>`;
+        if (response.status !== 200) {
+          body = body.replace("<pre>", `<p class="fail">HTTP ${esc(response.status)}</p><pre>`);
+        }
+      }
+      return htmlResponse(html("Declarations", "declarations", body));
     }
     case "/carrier": {
-      const note = `<p>The carrier journey (generation and translation) computes through the render surface's protocol renderings.</p>`;
-      return htmlResponse(html("Carrier", "carrier", note));
+      // The journey computes: the render surface's protocol
+      // renderings run in process.
+      const params = new URL(request.url).searchParams;
+      const passport = params.get("passport")?.trim();
+      const protocol = params.get("protocol")?.trim() || "untp";
+      const form = `<form method="get" action="/console/carrier">
+<input name="passport" value="${esc(passport ?? "")}" placeholder="passport id or GTIN">
+<select name="protocol"><option value="untp"${protocol === "untp" ? " selected" : ""}>UNTP triad</option><option value="en18222"${protocol === "en18222" ? " selected" : ""}>EN 18222</option></select>
+<button type="submit">render the carrier</button>
+</form>`;
+      let body = form;
+      if (passport) {
+        const { render } = await import("./render");
+        const pathname =
+          protocol === "en18222"
+            ? `/en18222/v1/dppsByProductId/${encodeURIComponent(passport)}`
+            : `/untp/product/${encodeURIComponent(passport)}`;
+        const response = await render(pathname, new Request(`https://console.unidpp.org/render${pathname}`), {
+          ISSUER: env.ISSUER,
+        });
+        if (response.status === 200) {
+          const document = (await response.json()) as Record<string, unknown>;
+          const summary =
+            protocol === "en18222"
+              ? `dpp ${esc(document.digitalProductPassportId ?? "")} · status ${esc(document.dppStatus ?? "")} · ${esc(Object.keys(document).length)} top-level members`
+              : `source ${esc((document.rendering as Record<string, unknown> | undefined)?.source ?? "")} · verdict ${esc((document.verdict as Record<string, unknown> | undefined)?.outcome ?? "")} · conformity ${esc(Array.isArray(document.conformity) ? document.conformity.length : 0)} credentials`;
+          body += `<p class="pass">${summary}</p><pre>${esc(JSON.stringify(document, null, 2).slice(0, 4000))}</pre>`;
+        } else {
+          const refused = (await response.json()) as Record<string, unknown>;
+          body += `<p class="fail">The render refused (HTTP ${esc(response.status)}): ${esc(JSON.stringify(refused))}</p>`;
+        }
+      }
+      return htmlResponse(html("Carrier", "carrier", body));
     }
     case "/branding": {
       const body = `<table><thead><tr><th>aspect</th><th>value</th></tr></thead><tbody>
@@ -364,6 +453,9 @@ export async function consoleSurface(
   if (gate(request, env) === "refused") {
     return new Response("", { status: 303, headers: { location: "/console/login" } });
   }
+  // The route is the path alone; the journey pages read the query
+  // from the request.
+  const route = pathname.split("?")[0];
   if (pathname === "/backups/drill" && request.method === "POST") {
     if (!env.ARCHIVE) return jsonResponse({ error: "the archive Durable Object is not bound" }, 503);
     let form: FormData;
@@ -388,5 +480,5 @@ export async function consoleSurface(
     const body = (await drilled.json()) as Record<string, unknown>;
     return jsonResponse(body, drilled.status);
   }
-  return page(pathname, request, env);
+  return page(route, request, env);
 }

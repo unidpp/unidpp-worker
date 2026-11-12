@@ -179,4 +179,101 @@ describe("the console surface", () => {
     const body = (await drilled.json()) as { snapshot_id?: string };
     expect(body.snapshot_id).toMatch(/^snap-/);
   });
+  it("computes the coverage journey through the views surface", async () => {
+    const issuer = new IssuerDO(storage());
+    const registry = new RegistryDO(storage());
+    // The LENS_ITEM fixture (the same manifest the views gates use).
+    const LENS = {
+      identifier: "urn:unidpp:profile:eu-espr-electronics",
+      register: "unidpp-registry",
+      item_class: "profile",
+      title: "The EU battery lens",
+      manifest: {
+        version: "1.0.0",
+        profile: {
+          id: "urn:unidpp:profile:eu-espr-electronics",
+          axes: { jurisdiction: "EU", sector: "batteries", characteristic: "battery-passport" },
+          trigger: "Any",
+          min_capability: "silent",
+          freshness: "Static",
+          effective: { from: "2027-01-01T00:00:00Z" },
+          data_points: [{ register: "unidpp", item: "passport-id", version: "1.0.0" }],
+          crypto_suites: ["ecdsa-p256"],
+          confidential: false,
+          resolution: "public",
+          edge_visibility: "blind",
+          traversal: "role-scoped",
+        },
+        bindings: [
+          { element: "unidpp/passport-id@1.0.0", source: "passport_id", min_trust: "self-declared", min_capability: "silent" },
+        ],
+        presentation: {
+          template_ref: "urn:unidpp:template:consumer-v1",
+          formatting: { unit_position: "suffix", decimal_digits: 1, fallback_lang: "en" },
+          sections: [
+            {
+              id: "product",
+              labels: { en: "Product" },
+              elements: [
+                { element: "unidpp/passport-id@1.0.0", labels: { en: "Passport" } },
+              ],
+            },
+          ],
+        },
+      },
+    };
+    await registry.fetch(
+      new Request("https://do.internal/items", {
+        method: "POST",
+        body: JSON.stringify({
+          register_id: "unidpp-registry",
+          item_id: LENS.identifier,
+          class: "profile",
+          definition: LENS.title,
+          version: "1.0.0",
+          manifest: LENS.manifest,
+        }),
+      }),
+    );
+    const minted = await issuer.fetch(
+      new Request("https://do.internal/passports", {
+        method: "POST",
+        body: JSON.stringify({ identity: "https://product.example.org/journey" }),
+      }),
+    );
+    const { passport_id: passportId } = (await minted.json()) as { passport_id: string };
+    const env = {
+      ISSUER: { idFromName: (n: string) => n, get: () => ({ fetch: issuer.fetch.bind(issuer) }) },
+      REGISTRY: { idFromName: (n: string) => n, get: () => ({ fetch: registry.fetch.bind(registry) }) },
+    };
+    const page = await serve(`/coverage?passport=${encodeURIComponent(passportId)}&profile=urn:unidpp:profile:eu-espr-electronics`, {}, env);
+    const html = await page.text();
+    expect(html).toContain("elements present");
+    expect(html).toContain("Complete:");
+  });
+
+  it("computes the carrier journey through the render surface", async () => {
+    const issuer = new IssuerDO(storage());
+    const page = await serve(
+      "/carrier?passport=urn:iso:std:iso-iec:15459:unidpp:passport:84120099012345&protocol=untp",
+      {},
+      {
+        ISSUER: { idFromName: (n: string) => n, get: () => ({ fetch: issuer.fetch.bind(issuer) }) },
+      },
+    );
+    const html = await page.text();
+    expect(html).toContain("verdict pass");
+    expect(html).toContain("fixture");
+  });
+
+  it("relays a declaration journey through the hub", async () => {
+    // The hub relay with empty evidence: the refusal states itself.
+    const page = await serve("/declarations", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "hub_id=unidpp-hub&evidence_hex=",
+    }, {});
+    const html = await page.text();
+    expect(html).toContain("{");
+  });
 });
