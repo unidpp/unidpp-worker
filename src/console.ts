@@ -37,6 +37,7 @@ const esc = (value: unknown): string =>
 const PAGES: ReadonlyArray<readonly [string, string]> = [
   ["/", "dashboard"],
   ["/designer", "designer"],
+  ["/mappings", "mappings"],
   ["/passports", "passports"],
   ["/profiles", "profiles"],
   ["/registry", "registry"],
@@ -179,6 +180,10 @@ async function page(pathname: string, request: Request, env: ConsoleEnv): Promis
         REGISTRY: env.REGISTRY,
         UNIDPP_DESIGNER_SIGN_SEED: env.UNIDPP_DESIGNER_SIGN_SEED,
       });
+    }
+    case "/mappings": {
+      const { workbench } = await import("./mappings");
+      return workbench(request, { REGISTRY: env.REGISTRY });
     }
     case "/passports": {
       const listed = await doJson(env.ISSUER, "/passports");

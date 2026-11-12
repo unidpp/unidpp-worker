@@ -75,6 +75,80 @@ export interface FeatureSpec {
   unit?: string;
 }
 
+// The clause-15 tier form of a cross-register mapping (alongside
+// the relation form): source, target, version and a tiered kind.
+// The tier duties the shape check enforces at intake, per clause
+// 15's intake obligation.
+export function mappingTierErrors(
+  manifest: Record<string, unknown>,
+  store: RegistryState,
+): string[] {
+  const errors: string[] = [];
+  const source = typeof manifest["source"] === "string" ? manifest["source"] : "";
+  const target = typeof manifest["target"] === "string" ? manifest["target"] : "";
+  if (!source) errors.push("manifest.source: the mapping names its source item");
+  if (!target) errors.push("manifest.target: the mapping names its target item");
+  const version = manifest["version"];
+  if (typeof version !== "number" || !Number.isInteger(version) || version < 1) {
+    errors.push("manifest.version: the mapping's own version is a positive integer");
+  }
+  const kind = manifest["kind"] as Record<string, unknown> | undefined;
+  if (!kind || typeof kind !== "object") {
+    errors.push("manifest.kind: the tier form carries its tiered kind");
+    return errors;
+  }
+  for (const [side, reference] of [
+    ["source", source],
+    ["target", target],
+  ] as const) {
+    if (!reference) continue;
+    const identifier = reference.split("@")[0];
+    if (!store.item(identifier)) {
+      errors.push(
+        `manifest.${side}: dangling reference: no registry item \`${identifier}\` names the ${side} end`,
+      );
+    }
+  }
+  const tier = kind["tier"];
+  if (tier === "deterministic") {
+    const transform = kind["transform"];
+    if (typeof transform !== "string" || !transform.trim()) {
+      errors.push(
+        "manifest.kind.transform: a tier-1 mapping names its registered, versioned transform",
+      );
+    }
+  } else if (tier === "correspondence") {
+    const scope = kind["scope"];
+    if (!Array.isArray(scope) || scope.length === 0) {
+      errors.push(
+        "manifest.kind.scope: a tier-2 correspondence declares its scope (what it covers)",
+      );
+    }
+    const residual = kind["residual"];
+    if (typeof residual !== "string" || !residual.trim()) {
+      errors.push(
+        "manifest.kind.residual: a tier-2 correspondence states its residual (what it does not cover)",
+      );
+    }
+    const attester = kind["attester"];
+    if (typeof attester !== "string" || !attester.trim()) {
+      errors.push("manifest.kind.attester: a tier-2 correspondence names its attester");
+    }
+  } else if (tier === "no-mapping") {
+    const note = kind["note"];
+    if (typeof note !== "string" || !note.trim()) {
+      errors.push(
+        "manifest.kind.note: a tier-3 record states why no correspondence is asserted",
+      );
+    }
+  } else {
+    errors.push(
+      "manifest.kind.tier: the tier is one of deterministic, correspondence, no-mapping",
+    );
+  }
+  return errors;
+}
+
 const validFactPath = (path: string): boolean =>
   path.length > 0 && path.split(".").every((segment) => segment.length > 0);
 
@@ -622,6 +696,19 @@ export class RegistryDO {
     }
     const one = path.match(/^\/items\/([^/]+)$/);
     if (one && request.method === "GET") return this.getOne(url, decodeURIComponent(one[1]));
+    // The plural subregister listing (`/{class}`): the item listing
+    // class-filtered.
+    const plural = path.match(/^\/([a-z-]+)$/);
+    if (plural && request.method === "GET") {
+      const name = plural[1];
+      const singular =
+        Object.entries(CLASS_PLURALS).find(([, p]) => p === name)?.[0] ??
+        (ITEM_CLASSES.includes(name) ? name : null);
+      if (!singular) return notFound("no such path");
+      const inner = new URL(request.url);
+      inner.searchParams.set("class", singular);
+      return this.list(inner);
+    }
     // The generic subregister mount (the native registry's
     // `/{class}/{id}`): the same item read, class-filtered.
     const sub = path.match(/^\/([a-z-]+)\/([^/]+)$/);
@@ -714,25 +801,31 @@ export class RegistryDO {
       return badRequest("`effective_until` must be after `effective_from`");
     }
     const manifest = (v.manifest as Record<string, unknown> | undefined) ?? undefined;
-    if (manifest) {
+    const tierForm = itemClass === "cross-register-mapping" && manifest?.["kind"] !== undefined;
+    if (manifest && !tierForm) {
       const pinned = manifest["version"];
       if (pinned !== version) {
         return badRequest("manifest `version` must be pinned to a registered version of the item");
       }
     }
-    // The class-scoped intake checks (clause 5; R10 B1 + B2): the
-    // descriptor's signed form and shape, the instance against its
-    // descriptor. Refusals name the failing paths.
-    if (itemClass === "class-descriptor" || itemClass === "instance") {
-      const scoped = itemClass === "class-descriptor"
-        ? [
-            ...descriptorSignatureErrors(manifest ?? {}),
-            ...descriptorManifestErrors(identifier, manifest ?? {}),
-          ]
-        : instanceErrors(identifier, manifest ?? {}, this.state);
-      if (scoped.length > 0) {
-        return badRequest(scoped.join("; "));
-      }
+    // The class-scoped intake checks (clause 5; R10 B1 + B2 + G7):
+    // the descriptor's signed form and shape, the instance against
+    // its descriptor, the mapping's tier duties. Refusals name the
+    // failing paths.
+    let scoped: string[] = [];
+    if (itemClass === "class-descriptor") {
+      scoped = [
+        ...descriptorSignatureErrors(manifest ?? {}),
+        ...descriptorManifestErrors(identifier, manifest ?? {}),
+      ];
+    } else if (itemClass === "instance") {
+      scoped = instanceErrors(identifier, manifest ?? {}, this.state);
+    } else if (itemClass === "cross-register-mapping" && manifest?.["kind"] !== undefined) {
+      // The clause-15 tier form rides its own duties.
+      scoped = mappingTierErrors(manifest ?? {}, this.state);
+    }
+    if (scoped.length > 0) {
+      return badRequest(scoped.join("; "));
     }
     const item: Item = {
       identifier,
@@ -819,11 +912,15 @@ export class RegistryDO {
       return badRequest(`\`${identifier}\` has no valid version to supersede`);
     }
     const manifest = (v.manifest as Record<string, unknown> | undefined) ?? undefined;
-    if (manifest) {
+    const supersedeTierForm =
+      item.item_class === "cross-register-mapping" && manifest?.["kind"] !== undefined;
+    if (manifest && !supersedeTierForm) {
       const pinned = manifest["version"];
       if (pinned !== version) {
         return badRequest("manifest `version` must be pinned to a registered version of the item");
       }
+    }
+    if (manifest) {
       // The same class-scoped checks gate a superseding manifest.
       if (item.item_class === "class-descriptor" || item.item_class === "instance") {
         const scoped = item.item_class === "class-descriptor"
@@ -832,6 +929,12 @@ export class RegistryDO {
               ...descriptorManifestErrors(identifier, manifest),
             ]
           : instanceErrors(identifier, manifest, this.state);
+        if (scoped.length > 0) {
+          return badRequest(scoped.join("; "));
+        }
+      }
+      if (supersedeTierForm) {
+        const scoped = mappingTierErrors(manifest, this.state);
         if (scoped.length > 0) {
           return badRequest(scoped.join("; "));
         }

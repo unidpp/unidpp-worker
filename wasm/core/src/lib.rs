@@ -569,6 +569,13 @@ pub mod en18222;
 #[path = "../../../../unidpp-gateway/src/untp.rs"]
 pub mod untp;
 
+// The clause-15 mapping discipline (the three tiers): the same
+// MappingItem the semantics crate compiles, included by path, so the
+// workbench's canonical preview and the intake's validation read the
+// same bytes the corpus pins.
+#[path = "../../../../unidpp-core/crates/semantics/src/mapping.rs"]
+pub mod semantics_mapping;
+
 use lens::LensManifest;
 use project::project;
 
@@ -846,4 +853,97 @@ pub unsafe extern "C" fn unidpp_render(
         }
     };
     outcome
+}
+
+/// Validate a clause-15 mapping item and return its canonical form:
+/// the item JSON in, `{canonical_hex, digest_hex}` out through the
+/// note buffer; a negative code with the parse error in the note.
+///
+/// # Safety
+/// All pointers name readable memory of the stated lengths.
+#[no_mangle]
+pub unsafe extern "C" fn unidpp_mapping_validate(
+    item_ptr: *const u8,
+    item_len: usize,
+) -> i32 {
+    let text = String::from_utf8_lossy(std::slice::from_raw_parts(item_ptr, item_len)).into_owned();
+    let parsed: Result<semantics_mapping::MappingItem, _> = serde_json::from_str(&text);
+    match parsed {
+        Ok(item) => {
+            let hex = |bytes: &[u8]| -> String {
+                bytes.iter().map(|b| format!("{b:02x}")).collect()
+            };
+            let document = serde_json::json!({
+                "canonical_hex": hex(&item.canonical_bytes()),
+                "digest_hex": hex(&item.digest()),
+            });
+            match serde_json::to_string(&document) {
+                Ok(text) => {
+                    unsafe {
+                        DEBUG_TEXT = Some(text);
+                    }
+                    0
+                }
+                Err(_) => -3,
+            }
+        }
+        Err(e) => {
+            unsafe {
+                DEBUG_TEXT = Some(format!("the mapping item does not parse: {e}"));
+            }
+            -1
+        }
+    }
+}
+
+/// Compose two mapping items into a chain (the clause-15 composition:
+/// the first's target must be the second's source, a tier-3 hop
+/// refuses, the policy cap holds) and return the chain JSON —
+/// endpoints, hops, accumulated residual and intersected scope —
+/// through the note buffer.
+///
+/// # Safety
+/// All pointers name readable memory of the stated lengths.
+#[no_mangle]
+pub unsafe extern "C" fn unidpp_mapping_compose(
+    first_ptr: *const u8,
+    first_len: usize,
+    second_ptr: *const u8,
+    second_len: usize,
+    cap: u64,
+) -> i32 {
+    let first_text =
+        String::from_utf8_lossy(std::slice::from_raw_parts(first_ptr, first_len)).into_owned();
+    let second_text =
+        String::from_utf8_lossy(std::slice::from_raw_parts(second_ptr, second_len)).into_owned();
+    let parse =
+        |text: &str| -> Result<semantics_mapping::MappingItem, String> {
+            serde_json::from_str(text).map_err(|e| format!("a mapping item does not parse: {e}"))
+        };
+    let outcome = (|| -> Result<serde_json::Value, String> {
+        let first = parse(&first_text)?;
+        let second = parse(&second_text)?;
+        let chain = semantics_mapping::MappingChain::single(first)
+            .map_err(|e| e.to_string())?
+            .then(second, cap as usize)
+            .map_err(|e| e.to_string())?;
+        serde_json::to_value(&chain).map_err(|e| e.to_string())
+    })();
+    match outcome {
+        Ok(chain) => match serde_json::to_string(&chain) {
+            Ok(text) => {
+                unsafe {
+                    DEBUG_TEXT = Some(text);
+                }
+                0
+            }
+            Err(_) => -3,
+        },
+        Err(message) => {
+            unsafe {
+                DEBUG_TEXT = Some(message);
+            }
+            -1
+        }
+    }
 }
