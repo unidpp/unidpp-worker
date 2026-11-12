@@ -108,6 +108,7 @@ interface Env {
    * id suffixed), its own journals, its own identity. */
   TENANT_HOSTS?: string;
   UNIDPP_CONSOLE_ADMIN_TOKEN?: string;
+  UNIDPP_DESIGNER_SIGN_SEED?: string;
   ARCHIVE_BUCKET?: { put(key: string, value: string): Promise<unknown>; get(key: string): Promise<{ text(): Promise<string> } | null> };
 }
 
@@ -231,6 +232,7 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
       TRUST: env?.TRUST,
       ARCHIVE: env?.ARCHIVE,
       UNIDPP_CONSOLE_ADMIN_TOKEN: env?.UNIDPP_CONSOLE_ADMIN_TOKEN,
+      UNIDPP_DESIGNER_SIGN_SEED: env?.UNIDPP_DESIGNER_SIGN_SEED,
       TENANT_HOSTS: env?.TENANT_HOSTS,
     });
   }

@@ -68,7 +68,7 @@ const FACT_KINDS = ["string", "decimal", "boolean", "list"];
 const CAPABILITY_CLASSES = ["silent", "passive-auth", "logged-contact", "connected"];
 const ISSUER_CLASSES = ["law", "treaty", "consensus", "declaration", "attestation"];
 
-interface FeatureSpec {
+export interface FeatureSpec {
   path: string;
   kind: string;
   required: boolean;
@@ -143,7 +143,7 @@ export function parseFeatureSpecs(
 // The signed form a class descriptor registers under (the same
 // discipline a profile manifest carries; the cryptographic reading
 // is the trust service's).
-function descriptorSignatureErrors(manifest: Record<string, unknown>): string[] {
+export function descriptorSignatureErrors(manifest: Record<string, unknown>): string[] {
   const errors: string[] = [];
   const issuerClass = manifest["issuer_class"];
   if (typeof issuerClass !== "string" || !ISSUER_CLASSES.includes(issuerClass)) {
@@ -164,7 +164,7 @@ function descriptorSignatureErrors(manifest: Record<string, unknown>): string[] 
   return errors;
 }
 
-function descriptorManifestErrors(
+export function descriptorManifestErrors(
   identifier: string,
   manifest: Record<string, unknown>,
 ): string[] {
@@ -214,36 +214,48 @@ function descriptorManifestErrors(
 
 // The instance against its descriptor (point-in-time; the open map
 // rides unvalidated).
-function instanceErrors(
+export function instanceErrors(
   identifier: string,
   manifest: Record<string, unknown>,
   store: RegistryState,
 ): string[] {
-  const errors: string[] = [];
   const classId = typeof manifest["instance_of"] === "string" ? manifest["instance_of"].trim() : "";
   if (!classId) {
-    errors.push(
+    return [
       "manifest.instance_of: the instance states the class it instantiates (the descriptor's identifier)",
-    );
-    return errors;
+    ];
   }
   const descriptor = store.item(classId);
   if (!descriptor || descriptor.item_class !== "class-descriptor" || !descriptor.manifest) {
-    errors.push(
+    return [
       descriptor
         ? `manifest.instance_of: \`${classId}\` is registered as a ${descriptor.item_class}, not a class descriptor`
         : `manifest.instance_of: unknown class \`${classId}\`: no registered class descriptor names it`,
-    );
-    return errors;
+    ];
   }
   const parsed = parseFeatureSpecs(descriptor.manifest);
   if (!parsed.ok) {
-    errors.push(
+    return [
       `manifest.instance_of: the class descriptor \`${classId}\` itself does not parse: ${parsed.errors.join("; ")}`,
-    );
-    return errors;
+    ];
   }
   const features = (manifest["features"] ?? {}) as Record<string, unknown>;
+  return instanceAgainstSpecs(classId, parsed.specs, features, store);
+}
+
+// The pure instance validation (the designer's draft path runs the
+// same rules against an unregistered descriptor's specs). The unit
+// check rides only when the caller resolves against a register
+// (checkUnits=false in the workbench, where the references are
+// stated as unverified).
+export function instanceAgainstSpecs(
+  classId: string,
+  specs: FeatureSpec[],
+  features: Record<string, unknown>,
+  store: Pick<RegistryState, "item">,
+  checkUnits = true,
+): string[] {
+  const errors: string[] = [];
   const valueKind = (value: unknown): string | null => {
     if (typeof value === "string") return "string";
     if (typeof value === "boolean") return "boolean";
@@ -251,8 +263,7 @@ function instanceErrors(
     if (Array.isArray(value) && value.every((v) => typeof v === "string")) return "list";
     return null;
   };
-  void identifier;
-  for (const spec of parsed.specs) {
+  for (const spec of specs) {
     const fact = features[spec.path];
     if (fact === undefined || fact === null) {
       if (spec.required) {
@@ -278,8 +289,8 @@ function instanceErrors(
       }
     }
   }
-  for (const spec of parsed.specs) {
-    if (!spec.unit) continue;
+  for (const spec of specs) {
+    if (!spec.unit || !checkUnits) continue;
     const unitItem = store.item(spec.unit);
     if (!unitItem || unitItem.item_class !== "unit") {
       errors.push(

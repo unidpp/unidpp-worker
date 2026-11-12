@@ -16,6 +16,7 @@ export interface DoNamespace {
 
 export interface ConsoleEnv {
   ISSUER?: DoNamespace;
+  UNIDPP_DESIGNER_SIGN_SEED?: string;
   REGISTRY?: DoNamespace;
   TRUST?: DoNamespace;
   ARCHIVE?: DoNamespace;
@@ -35,6 +36,7 @@ const esc = (value: unknown): string =>
 
 const PAGES: ReadonlyArray<readonly [string, string]> = [
   ["/", "dashboard"],
+  ["/designer", "designer"],
   ["/passports", "passports"],
   ["/profiles", "profiles"],
   ["/registry", "registry"],
@@ -170,6 +172,13 @@ async function page(pathname: string, request: Request, env: ConsoleEnv): Promis
         esc(host),
       ]);
       return htmlResponse(html("The deployment", "dashboard", table(["module", "prefix", "readiness", "public hostname"], rows)));
+    }
+    case "/designer": {
+      const { designer } = await import("./designer");
+      return designer(request, {
+        REGISTRY: env.REGISTRY,
+        UNIDPP_DESIGNER_SIGN_SEED: env.UNIDPP_DESIGNER_SIGN_SEED,
+      });
     }
     case "/passports": {
       const listed = await doJson(env.ISSUER, "/passports");
