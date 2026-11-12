@@ -47,6 +47,9 @@ const descriptorManifest = (classId: string) => ({
   ],
   capability_classes: ["silent", "logged-contact"],
   rule_references: ["rule.pressure-range"],
+  rules: [
+    { id: "rule.pressure-range", expr: "tyre.pressure-bar >= 1.0 and tyre.pressure-bar <= 4.5" },
+  ],
 });
 
 const registerDescriptor = async (registry: RegistryDO, classId = "tyre-e8"): Promise<Response> =>

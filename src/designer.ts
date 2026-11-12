@@ -16,6 +16,7 @@ import {
   parseFeatureSpecs,
   type FeatureSpec,
 } from "./registry-do";
+import { evalRule, parseRule, ruleDescriptorErrors } from "./rules";
 import { workerCore } from "./mount";
 import type { DoNamespace } from "./views";
 import type { Item } from "./registry-do";
@@ -153,6 +154,15 @@ function draftOf(form: FormData): { draft?: Draft; errors: string[] } {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+  let rules: unknown;
+  const rulesText = String(form.get("rules") ?? "").trim();
+  if (rulesText) {
+    try {
+      rules = JSON.parse(rulesText);
+    } catch (e) {
+      errors.push(`rules: the rule declarations are not JSON (${(e as Error).message})`);
+    }
+  }
   const issuerClass = String(form.get("issuer_class") ?? "").trim();
   const issuer = String(form.get("issuer") ?? "").trim();
   if (errors.length > 0) return { errors };
@@ -164,6 +174,7 @@ function draftOf(form: FormData): { draft?: Draft; errors: string[] } {
     features: features ?? [],
     capability_classes: capabilityClasses,
     rule_references: ruleReferences,
+    rules: rules ?? [],
   };
   return { draft: { classId, title, version, manifest }, errors };
 }
@@ -190,10 +201,35 @@ function validateDraft(
   ];
   const parsed = parseFeatureSpecs(draft.manifest);
   const specs = parsed.ok ? parsed.specs : [];
-  const results = instances.map((features, index) => ({
-    index,
-    errors: instanceAgainstSpecs(draft.classId, specs, features, { item: resolveUnit }, checkUnits),
-  }));
+  const declaredRules = new Map<string, string>();
+  const declared = draft.manifest["rules"];
+  if (Array.isArray(declared)) {
+    for (const rule of declared as Record<string, unknown>[]) {
+      const id = typeof rule["id"] === "string" ? rule["id"] : "";
+      const expression = typeof rule["expr"] === "string" ? rule["expr"] : "";
+      if (id) declaredRules.set(id, expression);
+    }
+  }
+  const results = instances.map((features, index) => {
+    const errors = instanceAgainstSpecs(
+      draft.classId,
+      specs,
+      features,
+      { item: resolveUnit },
+      checkUnits,
+    );
+    for (const reference of (draft.manifest["rule_references"] as string[] | undefined) ?? []) {
+      const expression = declaredRules.get(reference);
+      if (!expression) continue;
+      const parsed = parseRule(expression);
+      if (parsed.ok && !evalRule(parsed.expr, features)) {
+        errors.push(
+          `manifest.rule_references.${reference}: the rule \`${reference}\` of the class \`${draft.classId}\` is not satisfied: ${expression}`,
+        );
+      }
+    }
+    return { index, errors };
+  });
   return { descriptor, instances: results };
 }
 
@@ -218,6 +254,10 @@ function renderDesigner(result?: {
 <label>features (the feature specs, as a JSON array)</label>
 <textarea name="features" placeholder='[{"path":"tyre.pressure-bar","kind":"decimal","required":true,"unit":"bar"}]'>${esc(
     result?.draft?.manifest["features"] ? JSON.stringify(result.draft.manifest["features"], null, 2) : "",
+  )}</textarea>
+<label>rules (the rule declarations, as a JSON array of {id, expr})</label>
+<textarea name="rules" placeholder='[{"id":"rule.pressure-range","expr":"tyre.pressure-bar >= 1.0 and tyre.pressure-bar <= 4.5"}]'>${esc(
+    result?.draft?.manifest["rules"] ? JSON.stringify(result.draft.manifest["rules"], null, 2) : "",
   )}</textarea>
 <div class="row">
   <div><label>capability_classes (comma-separated S0–S3 tokens)</label><input name="capability_classes" value="${esc(

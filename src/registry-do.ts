@@ -59,6 +59,8 @@ const CLASS_PLURALS: Record<string, string> = {
   instance: "instances",
 };
 
+import { evalRule, parseRule, ruleDescriptorErrors } from "./rules";
+
 // The R10 intake checks (clause 5): the class descriptor registers
 // only in its signed form and declares its shape; an instance
 // validates against the descriptor it names, point-in-time, and
@@ -197,6 +199,43 @@ export function descriptorManifestErrors(
       }
     });
   }
+  // The rule references' deterministic reading (G4): every
+  // reference resolves to a declared rule, and each expression
+  // parses and reads only declared features with compatible kinds.
+  const declaredRules = new Map<string, string>();
+  const rules = manifest["rules"];
+  if (rules !== undefined && !Array.isArray(rules)) {
+    errors.push("manifest.rules: the descriptor declares its rules as an array of {id, expr}");
+  } else if (Array.isArray(rules)) {
+    rules.forEach((rule, index) => {
+      const record = rule as Record<string, unknown>;
+      const id = typeof record["id"] === "string" ? record["id"].trim() : "";
+      const expression = typeof record["expr"] === "string" ? record["expr"] : "";
+      if (!id) {
+        errors.push(`manifest.rules[${index}].id: a rule states its id`);
+        return;
+      }
+      if (declaredRules.has(id)) {
+        errors.push(`manifest.rules[${index}].id: the rule id \`${id}\` is declared twice`);
+      }
+      declaredRules.set(id, expression);
+      const parsed = parseRule(expression);
+      if (!parsed.ok) {
+        errors.push(
+          `manifest.rules[${index}].expr: the expression does not parse: at offset ${parsed.error.offset}, ${parsed.error.message}`,
+        );
+        return;
+      }
+      const kinds = new Map<string, string>();
+      const specs = parseFeatureSpecs(manifest);
+      if (specs.ok) {
+        for (const spec of specs.specs) kinds.set(spec.path, spec.kind);
+      }
+      for (const message of ruleDescriptorErrors(parsed.expr, kinds)) {
+        errors.push(`manifest.rules[${index}].expr: ${message}`);
+      }
+    });
+  }
   const ruleReferences = manifest["rule_references"];
   if (!Array.isArray(ruleReferences)) {
     errors.push(
@@ -206,6 +245,12 @@ export function descriptorManifestErrors(
     ruleReferences.forEach((token, index) => {
       if (typeof token !== "string" || !token.trim()) {
         errors.push(`manifest.rule_references[${index}]: a rule reference is a non-empty rule id`);
+        return;
+      }
+      if (!declaredRules.has(token)) {
+        errors.push(
+          `manifest.rule_references[${index}]: the rule reference \`${token}\` names no rule the descriptor declares in \`rules\``,
+        );
       }
     });
   }
@@ -240,7 +285,30 @@ export function instanceErrors(
     ];
   }
   const features = (manifest["features"] ?? {}) as Record<string, unknown>;
-  return instanceAgainstSpecs(classId, parsed.specs, features, store);
+  // The referenced rules read deterministically (G4): every
+  // referenced rule evaluates over the instance's facts; a failing
+  // rule names its id and its expression.
+  const declaredRules = new Map<string, string>();
+  const declared = descriptor.manifest["rules"];
+  if (Array.isArray(declared)) {
+    for (const rule of declared as Record<string, unknown>[]) {
+      const id = typeof rule["id"] === "string" ? rule["id"] : "";
+      const expression = typeof rule["expr"] === "string" ? rule["expr"] : "";
+      if (id) declaredRules.set(id, expression);
+    }
+  }
+  const errors = instanceAgainstSpecs(classId, parsed.specs, features, store);
+  for (const reference of (descriptor.manifest["rule_references"] as string[] | undefined) ?? []) {
+    const expression = declaredRules.get(reference);
+    if (!expression) continue; // the descriptor intake refuses dangling references
+    const parsed = parseRule(expression);
+    if (parsed.ok && !evalRule(parsed.expr, features)) {
+      errors.push(
+        `manifest.rule_references.${reference}: the rule \`${reference}\` of the class \`${classId}\` is not satisfied: ${expression}`,
+      );
+    }
+  }
+  return errors;
 }
 
 // The pure instance validation (the designer's draft path runs the

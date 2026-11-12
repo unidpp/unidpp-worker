@@ -45,6 +45,9 @@ const formBody = (overrides: Record<string, string> = {}): URLSearchParams =>
     issuer: "urn:unidpp:actor:consortium",
     capability_classes: "silent, logged-contact",
     rule_references: "rule.pressure-range",
+    rules: JSON.stringify([
+      { id: "rule.pressure-range", expr: "tyre.pressure-bar >= 1.0 and tyre.pressure-bar <= 4.5" },
+    ]),
     features: FEATURES,
     instances: JSON.stringify([
       { "tyre.pressure-bar": 2.3, "tyre.season": "winter", "tyre.runflat": true },
@@ -169,6 +172,7 @@ describe("the class designer", () => {
         features: JSON.parse(FEATURES),
         capability_classes: ["silent", "logged-contact"],
         rule_references: ["rule.pressure-range"],
+        rules: [{ id: "rule.pressure-range", expr: "tyre.pressure-bar >= 1.0 and tyre.pressure-bar <= 4.5" }],
       }),
     ) as Record<string, unknown>;
     const stable = (value: unknown): string => {
