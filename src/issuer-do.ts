@@ -11,6 +11,10 @@ import { workerCore } from "./mount";
 export interface PassportRecord {
   document: Record<string, unknown>;
   audit_seq: number;
+  /** The bound profile layer (clause 5; the issuer's config
+   * vector): id + version + optional effective window, stored
+   * verbatim and served beside the document. */
+  profiles?: { id: string; version: string; effective_from?: string }[];
 }
 
 const badRequest = (error: string): Response =>
@@ -141,6 +145,19 @@ export class IssuerDO {
     if (!identity) return badRequest("`identity` is required");
     const capability = (v.capability as string)?.trim() || "silent";
     const validFrom = typeof v.valid_from === "string" ? Date.parse(v.valid_from) : Date.now();
+    // The profile layer binds verbatim (the issuer's config
+    // vector); the entries must state id and version.
+    const rawProfiles = Array.isArray(v.profiles) ? (v.profiles as Record<string, unknown>[]) : [];
+    const profiles: NonNullable<PassportRecord["profiles"]> = [];
+    for (const entry of rawProfiles) {
+      const id = typeof entry["id"] === "string" ? entry["id"].trim() : "";
+      const profileVersion = typeof entry["version"] === "string" ? entry["version"].trim() : "";
+      if (!id || !profileVersion) {
+        return badRequest("each bound profile states `id` and `version`");
+      }
+      const effectiveFrom = typeof entry["effective_from"] === "string" ? entry["effective_from"] : undefined;
+      profiles.push({ id, version: profileVersion, ...(effectiveFrom ? { effective_from: effectiveFrom } : {}) });
+    }
     const minted = mintDocument(
       this.core,
       identity,
@@ -157,6 +174,7 @@ export class IssuerDO {
     const record: PassportRecord = {
       document: minted.document,
       audit_seq: 0,
+      ...(profiles.length > 0 ? { profiles } : {}),
     };
     const seq = await this.journal.append({ op: "register-passport", record });
     record.audit_seq = seq;
@@ -193,7 +211,11 @@ export class IssuerDO {
   private getOne(passportId: string): Response {
     const record = this.passports.get(passportId);
     if (!record) return stamped(404, { error: `no passport \`${passportId}\`` });
-    return stamped(200, { ...record.document, audit_seq: record.audit_seq });
+    return stamped(200, {
+      ...record.document,
+      audit_seq: record.audit_seq,
+      ...(record.profiles ? { profiles: record.profiles } : {}),
+    });
   }
 
   private list(): Response {

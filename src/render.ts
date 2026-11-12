@@ -125,11 +125,13 @@ function renderBoundary(
 }
 
 // The issuer's passport document (the audit sequence stripped), or
-// null on a miss.
+// null on a miss. The bound profile layer (clause 5) rides beside
+// the document and returns separately for the render's profile
+// refs.
 async function issuerPassport(
   env: { ISSUER?: DoNamespace },
   passportId: string,
-): Promise<string | null> {
+): Promise<{ document: string; profiles: { id: string; version: string; effective_from?: string }[] } | null> {
   if (!env.ISSUER) return null;
   const stub = env.ISSUER.get(env.ISSUER.idFromName("estate"));
   const response = await stub.fetch(
@@ -137,9 +139,13 @@ async function issuerPassport(
   );
   if (response.status !== 200) return null;
   const body = (await response.json()) as Record<string, unknown>;
+  const profiles = Array.isArray(body.profiles)
+    ? (body.profiles as { id: string; version: string; effective_from?: string }[])
+    : [];
   const document = { ...body };
   delete document.audit_seq;
-  return JSON.stringify(document);
+  delete document.profiles;
+  return { document: JSON.stringify(document), profiles };
 }
 
 // The issuer's passport whose subject is GS1-keyed under `gtin`
@@ -148,24 +154,24 @@ async function issuerPassport(
 async function issuerGtin(
   env: { ISSUER?: DoNamespace },
   gtin: string,
-): Promise<string | null> {
+): Promise<{ document: string; profiles: { id: string; version: string; effective_from?: string }[] } | null> {
   if (!env.ISSUER) return null;
   const stub = env.ISSUER.get(env.ISSUER.idFromName("estate"));
   const listed = (await (
     await stub.fetch(new Request("https://do.internal/passports"))
   ).json()) as { passports?: { passport_id: string }[] };
   for (const entry of listed.passports ?? []) {
-    const text = await issuerPassport(env, entry.passport_id);
-    if (!text) continue;
+    const found = await issuerPassport(env, entry.passport_id);
+    if (!found) continue;
     // The document's subject serializes through the model's Display:
     // the GS1 family prints as the element string `01+<key>` (with
     // optional `+10+lot` / `+21+serial` tails), everything else as
     // `scheme:key`. The EN route addresses the GTIN key.
-    const document = JSON.parse(text) as { product_id?: string };
+    const document = JSON.parse(found.document) as { product_id?: string };
     const subject = document.product_id ?? "";
     if (!subject.startsWith("01+")) continue;
     const key = subject.split("+")[1] ?? "";
-    if (key === gtin) return text;
+    if (key === gtin) return found;
   }
   return null;
 }
@@ -197,12 +203,12 @@ export async function render(
     // The GTIN route addresses the key: only a GS1-keyed passport in
     // the issuer's store resolves (no fixture carries a GTIN subject;
     // anything else is the no-information 404).
-    const passportText = await issuerGtin(env, gtin);
-    if (!passportText) return noInformation(asOf);
+    const found = await issuerGtin(env, gtin);
+    if (!found) return noInformation(asOf);
     const minted = renderBoundary(
       "en18222",
-      passportText,
-      "[]",
+      found.document,
+      JSON.stringify(found.profiles),
       representation,
       "",
       "issuer",
@@ -220,23 +226,24 @@ export async function render(
     if (freshness && durationMs(freshness) === null) {
       return stamped(400, JSON.stringify({ error: "`freshness` must be an ISO 8601 duration (PnDTnHnMnS)" }), asOf);
     }
-    let passportText = await issuerPassport(env, id);
+    let found = await issuerPassport(env, id);
     let origin = "issuer";
-    if (!passportText) {
+    let profiles: { id: string; version: string; effective_from?: string }[] = [];
+    if (!found) {
       const fixture = fixturePassport();
       const fixtureId = fixture
         ? (JSON.parse(fixture) as { passport_id?: string }).passport_id
         : null;
       if (fixture && fixtureId === id) {
-        passportText = fixture;
+        found = { document: fixture, profiles: [] };
         origin = "fixture";
       }
     }
-    if (!passportText) return noInformation(asOf);
+    if (!found) return noInformation(asOf);
     const minted = renderBoundary(
       "untp",
-      passportText,
-      "[]",
+      found.document,
+      JSON.stringify(found.profiles),
       "",
       freshness,
       origin,

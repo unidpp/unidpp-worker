@@ -134,6 +134,86 @@ describe("the render surface", () => {
     expect(triad.rendering?.source).toBe("issuer");
   });
 
+  it("carries the issuer's bound profile layer into the renderings", async () => {
+    const issuer = new IssuerDO(storage());
+    const minted = await issuer.fetch(
+      new Request("https://do.internal/passports", {
+        method: "POST",
+        body: JSON.stringify({
+          identity: "gtin:4006381333931",
+          profiles: [
+            { id: "urn:unidpp:profile:eu-espr-electronics", version: "1.0.0", effective_from: "2027-01-01T00:00:00Z" },
+          ],
+        }),
+      }),
+    );
+    expect(minted.status).toBe(201);
+    // The bound layer reads beside the document.
+    const read = (await (
+      await issuer.fetch(new Request("https://do.internal/passports"))
+    ).json()) as { passports: { passport_id: string }[] };
+    const one = (await (
+      await issuer.fetch(
+        new Request(`https://do.internal/passports/${encodeURIComponent(read.passports[0].passport_id)}`),
+      )
+    ).json()) as { profiles?: { id: string; version: string }[] };
+    expect(one.profiles).toHaveLength(1);
+    expect(one.profiles?.[0].id).toBe("urn:unidpp:profile:eu-espr-electronics");
+    // The EN render's contentSpecificationIds carry the bound refs.
+    const en = await render(
+      "/en18222/v1/dppsByProductId/4006381333931",
+      new Request(
+        "https://app.unidpp.org/render/en18222/v1/dppsByProductId/4006381333931?representation=full",
+      ),
+      envWith(issuer),
+    );
+    expect(en.status).toBe(200);
+    const document = (await en.json()) as { contentSpecificationIds?: string[] };
+    expect(document.contentSpecificationIds).toContain(
+      "urn:unidpp:profile:eu-espr-electronics@1.0.0",
+    );
+    // The UNTP triad's standardsConformance carries the bound refs.
+    const minted2 = await issuer.fetch(
+      new Request("https://do.internal/passports", {
+        method: "POST",
+        body: JSON.stringify({
+          identity: "cpid:urn:test:bound-profiles",
+          profiles: [{ id: "urn:unidpp:profile:eu-espr-electronics", version: "1.0.0" }],
+        }),
+      }),
+    );
+    const { passport_id: boundId } = (await minted2.json()) as { passport_id: string };
+    const triad = await render(
+      `/untp/product/${encodeURIComponent(boundId)}`,
+      new Request(`https://app.unidpp.org/render/untp/product/${encodeURIComponent(boundId)}`),
+      envWith(issuer),
+    );
+    expect(triad.status).toBe(200);
+    const body = (await triad.json()) as {
+      passport?: { standardsConformance?: { standard?: string; conformanceVersion?: string }[] };
+    };
+    expect(body.passport?.standardsConformance?.[0]?.standard).toBe(
+      "urn:unidpp:profile:eu-espr-electronics",
+    );
+    expect(body.passport?.standardsConformance?.[0]?.conformanceVersion).toBe("1.0.0");
+  });
+
+  it("refuses a bound profile without id or version", async () => {
+    const issuer = new IssuerDO(storage());
+    const minted = await issuer.fetch(
+      new Request("https://do.internal/passports", {
+        method: "POST",
+        body: JSON.stringify({
+          identity: "cpid:urn:test:bad-binding",
+          profiles: [{ id: "urn:unidpp:profile:x" }],
+        }),
+      }),
+    );
+    expect(minted.status).toBe(400);
+    const body = (await minted.json()) as { error: string };
+    expect(body.error).toContain("`id` and `version`");
+  });
+
   it("states the misses and the refusals", async () => {
     const issuer = new IssuerDO(storage());
     const noGtin = await render(
