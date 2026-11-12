@@ -136,7 +136,7 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
     : null;
   // The DATA surface rides the Durable Object (REARCH R12 S2); the
   // contract and health answers stay the embedded goldens.
-  const registryData = registryRest?.match(/^\/(items|applicability|admin|models|discovery|debug-journal)($|\/)/);
+  const registryData = registryRest?.match(/^\/(items|applicability|admin|models|discovery|cross-register-mappings|class-descriptors|instances)($|\/)/);
   if (registryRest && registryData) {
     if (!env?.REGISTRY) {
       return new Response(
