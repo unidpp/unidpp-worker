@@ -22,6 +22,10 @@ export interface ConsoleEnv {
   ARCHIVE?: DoNamespace;
   UNIDPP_CONSOLE_ADMIN_TOKEN?: string;
   TENANT_HOSTS?: string;
+  /** The dispatching tenant (the router's Host decision); the
+   * pages' data reads and the designer's writes ride the tenant's
+   * own DO namespaces. */
+  tenant?: string;
 }
 
 export const CONSOLE_VERSION = "0.1.0";
@@ -139,9 +143,10 @@ function gate(request: Request, env: ConsoleEnv): "refused" | null {
 async function doJson(
   ns: DoNamespace | undefined,
   path: string,
+  tenant?: string,
 ): Promise<Record<string, unknown> | null> {
   if (!ns) return null;
-  const stub = ns.get(ns.idFromName("estate"));
+  const stub = ns.get(ns.idFromName(tenant ? `${"estate"}@${tenant}` : "estate"));
   const response = await stub.fetch(new Request(`https://do.internal${path}`));
   if (response.status !== 200) return null;
   return (await response.json()) as Record<string, unknown>;
@@ -179,14 +184,15 @@ async function page(pathname: string, request: Request, env: ConsoleEnv): Promis
       return designer(request, {
         REGISTRY: env.REGISTRY,
         UNIDPP_DESIGNER_SIGN_SEED: env.UNIDPP_DESIGNER_SIGN_SEED,
+        tenant: env.tenant,
       });
     }
     case "/mappings": {
       const { workbench } = await import("./mappings");
-      return workbench(request, { REGISTRY: env.REGISTRY });
+      return workbench(request, { REGISTRY: env.REGISTRY, tenant: env.tenant });
     }
     case "/passports": {
-      const listed = await doJson(env.ISSUER, "/passports");
+      const listed = await doJson(env.ISSUER, "/passports", env.tenant);
       const passports =
         (listed?.passports as { passport_id: string; subject?: string; audit_seq: number }[]) ?? [];
       const rows = passports.map((p) => [
@@ -201,7 +207,7 @@ async function page(pathname: string, request: Request, env: ConsoleEnv): Promis
     }
     case "/profiles":
     case "/registry": {
-      const listed = await doJson(env.REGISTRY, "/items");
+      const listed = await doJson(env.REGISTRY, "/items", env.tenant);
       const items =
         (listed?.items as {
           identifier?: string;
@@ -248,7 +254,7 @@ async function page(pathname: string, request: Request, env: ConsoleEnv): Promis
     }
     case "/archival":
     case "/backups": {
-      const listed = await doJson(env.ARCHIVE, "/snapshots");
+      const listed = await doJson(env.ARCHIVE, "/snapshots", env.tenant);
       const snapshots = (listed?.snapshots as { id?: string; tree_size?: number; created_at?: string }[]) ?? [];
       const rows = snapshots.map((s) => [
         esc(s.id ?? ""),
@@ -458,6 +464,7 @@ export async function consoleSurface(
   const route = pathname.split("?")[0];
   if (pathname === "/backups/drill" && request.method === "POST") {
     if (!env.ARCHIVE) return jsonResponse({ error: "the archive Durable Object is not bound" }, 503);
+    const archiveId = env.ARCHIVE.idFromName(env.tenant ? `estate@${env.tenant}` : "estate");
     let form: FormData;
     try {
       form = (await request.formData()) as FormData;
@@ -470,7 +477,7 @@ export async function consoleSurface(
       log_head: String(form.get("log_head") ?? ""),
       submitter: "console-backup-drill",
     };
-    const stub = env.ARCHIVE.get(env.ARCHIVE.idFromName("estate"));
+    const stub = env.ARCHIVE.get(archiveId);
     const drilled = await stub.fetch(
       new Request("https://do.internal/snapshots", {
         method: "POST",

@@ -15,6 +15,7 @@ import type { DoNamespace } from "./views";
 
 export interface WorkbenchEnv {
   REGISTRY?: DoNamespace;
+  tenant?: string;
 }
 
 const NOTE_CAPACITY = 1048576;
@@ -244,7 +245,9 @@ export async function workbench(request: Request, env: WorkbenchEnv): Promise<Re
       renderWorkbench({ item, canonical: verdict, error: "the registry Durable Object is not bound" }),
     );
   }
-  const stub = env.REGISTRY.get(env.REGISTRY.idFromName("estate"));
+  const stub = env.REGISTRY.get(
+    env.REGISTRY.idFromName(env.tenant ? `estate@${env.tenant}` : "estate"),
+  );
   const registered = await stub.fetch(
     new Request("https://do.internal/items", {
       method: "POST",

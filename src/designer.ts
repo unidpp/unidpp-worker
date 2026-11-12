@@ -24,6 +24,7 @@ import type { Item } from "./registry-do";
 export interface DesignerEnv {
   REGISTRY?: DoNamespace;
   UNIDPP_DESIGNER_SIGN_SEED?: string;
+  tenant?: string;
 }
 
 const ISSUER_CLASSES = ["law", "treaty", "consensus", "declaration", "attestation"];
@@ -314,7 +315,9 @@ async function unitResolver(
   env: DesignerEnv,
 ): Promise<(identifier: string) => Item | undefined> {
   if (!env.REGISTRY) return () => undefined;
-  const stub = env.REGISTRY.get(env.REGISTRY.idFromName("estate"));
+  const stub = env.REGISTRY.get(
+    env.REGISTRY.idFromName(env.tenant ? `estate@${env.tenant}` : "estate"),
+  );
   const cache = new Map<string, Item | undefined>();
   return (identifier: string) => {
     if (cache.has(identifier)) return cache.get(identifier);
@@ -408,7 +411,9 @@ export async function designer(
       }),
     );
   }
-  const stub = env.REGISTRY.get(env.REGISTRY.idFromName("estate"));
+  const stub = env.REGISTRY.get(
+    env.REGISTRY.idFromName(env.tenant ? `estate@${env.tenant}` : "estate"),
+  );
   const registered = await stub.fetch(
     new Request("https://do.internal/items", {
       method: "POST",

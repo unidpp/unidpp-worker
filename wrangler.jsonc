@@ -14,6 +14,13 @@
     ]
   },
   "r2_buckets": [{ "binding": "ARCHIVE_BUCKET", "bucket_name": "unidpp-archive" }],
+  // The tenant dispatch (REARCH R6 on Workers): demo.unidpp.org is
+  // the tenant — the same code, an isolated data folder (its own DO
+  // namespaces, its own journals, its own identity). app.unidpp.org
+  // stays the live estate.
+  "vars": {
+    "TENANT_HOSTS": "{\"demo.unidpp.org\": \"demo\"}"
+  },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RegistryDO", "LogDO", "TrustDO", "IssuerDO", "ArchiveDO", "IdentityDO"] }],
   "build": {
     "command": "npm run build:wasm"

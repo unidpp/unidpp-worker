@@ -129,11 +129,13 @@ function renderBoundary(
 // the document and returns separately for the render's profile
 // refs.
 async function issuerPassport(
-  env: { ISSUER?: DoNamespace },
+  env: { ISSUER?: DoNamespace; tenant?: string },
   passportId: string,
 ): Promise<{ document: string; profiles: { id: string; version: string; effective_from?: string }[] } | null> {
   if (!env.ISSUER) return null;
-  const stub = env.ISSUER.get(env.ISSUER.idFromName("estate"));
+  const stub = env.ISSUER.get(
+    env.ISSUER.idFromName(env.tenant ? `estate@${env.tenant}` : "estate"),
+  );
   const response = await stub.fetch(
     new Request(`https://do.internal/passports/${encodeURIComponent(passportId)}`),
   );
@@ -152,11 +154,13 @@ async function issuerPassport(
 // (the EN 18222 route addresses the key; the estate scans its own
 // store — the documented issuer-mode GTIN limitation, scoped).
 async function issuerGtin(
-  env: { ISSUER?: DoNamespace },
+  env: { ISSUER?: DoNamespace; tenant?: string },
   gtin: string,
 ): Promise<{ document: string; profiles: { id: string; version: string; effective_from?: string }[] } | null> {
   if (!env.ISSUER) return null;
-  const stub = env.ISSUER.get(env.ISSUER.idFromName("estate"));
+  const stub = env.ISSUER.get(
+    env.ISSUER.idFromName(env.tenant ? `estate@${env.tenant}` : "estate"),
+  );
   const listed = (await (
     await stub.fetch(new Request("https://do.internal/passports"))
   ).json()) as { passports?: { passport_id: string }[] };
@@ -186,7 +190,7 @@ function fixturePassport(): string | null {
 export async function render(
   pathname: string,
   request: Request,
-  env: { ISSUER?: DoNamespace },
+  env: { ISSUER?: DoNamespace; tenant?: string },
 ): Promise<Response> {
   const params = new URL(request.url).searchParams;
   const asOf = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");

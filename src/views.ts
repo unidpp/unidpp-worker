@@ -74,8 +74,12 @@ export async function view(
   env: {
     ISSUER?: DoNamespace;
     REGISTRY?: DoNamespace;
+    tenant?: string;
   },
 ): Promise<Response> {
+  // The tenant names the DO folder (R6): the id carries the suffix.
+  const estate = (ns: DoNamespace, name: string) =>
+    ns.get(ns.idFromName(env.tenant ? `${name}@${env.tenant}` : name));
   const params = new URL(request.url).searchParams;
   const passportId = params.get("passport")?.trim();
   const profile = params.get("profile")?.trim();
@@ -90,7 +94,7 @@ export async function view(
   let passportText: string | null = null;
   let passportFromFixtures = false;
   if (env.ISSUER) {
-    const stub = env.ISSUER.get(env.ISSUER.idFromName("estate"));
+    const stub = estate(env.ISSUER, "estate");
     const response = await stub.fetch(
       new Request(`https://do.internal/passports/${encodeURIComponent(passportId)}`),
     );
@@ -126,7 +130,7 @@ export async function view(
   let lensText: string | null = null;
   let source = "registry";
   if (env.REGISTRY) {
-    const stub = env.REGISTRY.get(env.REGISTRY.idFromName("estate"));
+    const stub = estate(env.REGISTRY, "estate");
     const response = await stub.fetch(
       new Request(`https://do.internal/profiles/${encodeURIComponent(profile)}`),
     );

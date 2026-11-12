@@ -121,7 +121,7 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
   if (env?.TENANT_HOSTS) {
     try {
       const hosts = JSON.parse(env.TENANT_HOSTS) as Record<string, string>;
-      const host = request.headers.get("host")?.split(":")[0];
+      const host = (request.headers.get("host") ?? new URL(request.url).hostname).split(":")[0];
       if (host && hosts[host]) tenant = hosts[host];
     } catch {
       // a malformed map dispatches nobody
@@ -144,11 +144,10 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
         { status: 503, headers: { "content-type": "application/json" } },
       );
     }
-    const id = env.REGISTRY.idFromName("estate");
-    const stub = env.REGISTRY.get(id);
+    const stub = namespace(env.REGISTRY, "estate");
     const inner = new URL(request.url);
     inner.pathname = registryRest;
-    return stub.fetch(new Request(inner.toString(), request));
+    return stub!.fetch(new Request(inner.toString(), request));
   }
   // The transparency log and the trust surface ride their own
   // Durable Objects (REARCH R12 S3).
@@ -208,6 +207,7 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
     return view(request, {
       ISSUER: env?.ISSUER,
       REGISTRY: env?.REGISTRY,
+      tenant: tenant ?? undefined,
     });
   }
   // The render surface (REARCH R12 S5-serve): the EN 18222 document
@@ -216,7 +216,7 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
   const renderRest = pathname.startsWith("/render/") ? pathname.slice("/render".length) : null;
   if (renderRest && /^\/(en18222|untp)\//.test(renderRest)) {
     const { render } = await import("./render");
-    return render(renderRest, request, { ISSUER: env?.ISSUER });
+    return render(renderRest, request, { ISSUER: env?.ISSUER, tenant: tenant ?? undefined });
   }
   // The console surface (REARCH R12 S5-serve): the operator pages
   // computed from the estate's own state, session-gated where an
@@ -234,6 +234,7 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
       UNIDPP_CONSOLE_ADMIN_TOKEN: env?.UNIDPP_CONSOLE_ADMIN_TOKEN,
       UNIDPP_DESIGNER_SIGN_SEED: env?.UNIDPP_DESIGNER_SIGN_SEED,
       TENANT_HOSTS: env?.TENANT_HOSTS,
+      tenant: tenant ?? undefined,
     });
   }
   const issuerRest = pathname.startsWith("/issuer/") ? pathname.slice("/issuer".length) : null;

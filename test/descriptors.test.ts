@@ -286,4 +286,40 @@ describe("the instance intake", () => {
     const body = (await superseded.json()) as { error: string };
     expect(body.error).toContain("wrong-kind");
   });
+  it("dispatches a tenant's writes into the tenant's own namespace", async () => {
+    const seen: Record<string, string[]> = { estate: [], "estate@demo": [] };
+    const makeNs = () => ({
+      idFromName: (n: string) => n,
+      get: (id: unknown) => ({
+        fetch: async (request: Request) => {
+          const name = String(id);
+          const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+          if (request.method === "POST" && new URL(request.url).pathname === "/items") {
+            seen[name] = [...(seen[name] ?? []), String(body["item_id"])];
+            return new Response(JSON.stringify({ ok: true }), { status: 201 });
+          }
+          return new Response(JSON.stringify({ error: "unsupported" }), { status: 400 });
+        },
+      }),
+    });
+    const { handle } = await import("../src/estate");
+    await handle(
+      new Request("https://demo.unidpp.org/registry/items", {
+        method: "POST",
+        body: JSON.stringify({
+          register_id: "unidpp-registry",
+          item_id: "tenant-probe",
+          class: "data-element",
+          definition: "A tenant probe",
+          version: "1.0.0",
+        }),
+      }),
+      {
+        REGISTRY: makeNs() as Parameters<typeof handle>[1] extends infer E ? { [K in keyof E]: E[K] } : never,
+        TENANT_HOSTS: '{"demo.unidpp.org": "demo"}',
+      } as unknown as Parameters<typeof handle>[1],
+    );
+    expect(seen["estate@demo"]).toEqual(["tenant-probe"]);
+    expect(seen["estate"]).toEqual([]);
+  });
 });
