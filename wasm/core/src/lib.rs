@@ -1220,3 +1220,115 @@ pub unsafe extern "C" fn unidpp_verify_raw(
         Err(_) => 0,
     }
 }
+
+// ---------------------------------------------------------------------------
+// The S13 dossier boundary (SI-9/10/11): the verification route's and the
+// coverage report's canonical forms — the same encoders the corpus's
+// fixtures pin and the CLI's F2 conformance reads — plus the composition
+// law. Pure functions of their JSON inputs; the canonical bytes and the
+// digest ride the note buffer.
+// ---------------------------------------------------------------------------
+
+fn canonical_note(value: serde_json::Value) -> i32 {
+    match serde_json::to_string(&value) {
+        Ok(text) => {
+            unsafe {
+                DEBUG_TEXT = Some(text);
+            }
+            0
+        }
+        Err(_) => -3,
+    }
+}
+
+fn parse_error(prefix: &str, message: String) -> i32 {
+    unsafe {
+        DEBUG_TEXT = Some(format!("{prefix}: {message}"));
+    }
+    -1
+}
+
+/// Canonicalize a verification route (SI-11): the steps ride as JSON
+/// (the s13 crate's serde form), `{canonical_hex, digest_hex}` return
+/// through the note buffer.
+///
+/// # Safety
+/// `ptr` names `len` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn unidpp_s13_route_canonical(steps_ptr: *const u8, steps_len: usize) -> i32 {
+    use unidpp_s13::route::{RouteStep, VerificationRoute};
+    let text =
+        String::from_utf8_lossy(std::slice::from_raw_parts(steps_ptr, steps_len)).into_owned();
+    let outcome = (|| -> Result<serde_json::Value, String> {
+        let steps: Vec<RouteStep> =
+            serde_json::from_str(&text).map_err(|e| format!("the steps do not parse: {e}"))?;
+        let mut route = VerificationRoute::new();
+        route.steps = steps;
+        let hex = |bytes: &[u8]| -> String { bytes.iter().map(|b| format!("{b:02x}")).collect() };
+        Ok(serde_json::json!({
+            "canonical_hex": hex(&route.canonical_bytes()),
+            "digest_hex": hex(&route.digest()),
+        }))
+    })();
+    match outcome {
+        Ok(value) => canonical_note(value),
+        Err(message) => parse_error("route refused", message),
+    }
+}
+
+/// Canonicalize a coverage report (XB-8): the report rides as JSON,
+/// `{canonical_hex, digest_hex}` return through the note buffer.
+///
+/// # Safety
+/// `ptr` names `len` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn unidpp_s13_coverage_canonical(
+    report_ptr: *const u8,
+    report_len: usize,
+) -> i32 {
+    use unidpp_s13::coverage::CoverageReport;
+    let text =
+        String::from_utf8_lossy(std::slice::from_raw_parts(report_ptr, report_len)).into_owned();
+    let outcome = (|| -> Result<serde_json::Value, String> {
+        let report: CoverageReport =
+            serde_json::from_str(&text).map_err(|e| format!("the report does not parse: {e}"))?;
+        let hex = |bytes: &[u8]| -> String { bytes.iter().map(|b| format!("{b:02x}")).collect() };
+        Ok(serde_json::json!({
+            "canonical_hex": hex(&report.canonical_bytes()),
+            "digest_hex": hex(&report.digest()),
+        }))
+    })();
+    match outcome {
+        Ok(value) => canonical_note(value),
+        Err(message) => parse_error("coverage refused", message),
+    }
+}
+
+/// The composition law (SI-10): the layer vector rides as JSON, the
+/// effective level, the bottleneck layer and the policy binding come
+/// back through the note buffer.
+///
+/// # Safety
+/// `ptr` names `len` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn unidpp_s13_compose(
+    vector_ptr: *const u8,
+    vector_len: usize,
+    policy_cap: u64,
+) -> i32 {
+    use unidpp_s13::route::{compose, LayerVector};
+    let text =
+        String::from_utf8_lossy(std::slice::from_raw_parts(vector_ptr, vector_len)).into_owned();
+    let outcome = (|| -> Result<serde_json::Value, String> {
+        if policy_cap > 255 {
+            return Err("the policy cap exceeds the harmonization scale".to_string());
+        }
+        let vector: LayerVector =
+            serde_json::from_str(&text).map_err(|e| format!("the vector does not parse: {e}"))?;
+        serde_json::to_value(compose(&vector, policy_cap as u8)).map_err(|e| e.to_string())
+    })();
+    match outcome {
+        Ok(value) => canonical_note(value),
+        Err(message) => parse_error("compose refused", message),
+    }
+}

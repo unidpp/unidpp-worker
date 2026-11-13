@@ -247,3 +247,63 @@ export function bytesHex(bytes: Uint8Array): string {
 export function core(): CoreExports {
   return workerCore();
 }
+
+// --- the dossier boundary (SI-9/10/11) ----------------------------------
+
+export interface RouteStepDoc {
+  step: string;
+  subject?: string;
+  mode?: string;
+  counterpart?: string;
+  kind?: string;
+  digest?: number[];
+  data_class?: string;
+  service?: string;
+  entry?: unknown;
+  reason?: string;
+}
+
+export interface CanonicalDocument {
+  canonical_hex: string;
+  digest_hex: string;
+}
+
+export interface CompositionDoc {
+  level: number;
+  bottleneck: string | null;
+  policy_bound: boolean;
+}
+
+function boundaryJson(core: CoreExports, rc: number): { ok: true; document: Record<string, unknown> } | { ok: false; error: string } {
+  if (rc !== 0) return { ok: false, error: takeNote(core) || `the boundary call failed (${rc})` };
+  try {
+    return { ok: true, document: JSON.parse(takeNote(core)) as Record<string, unknown> };
+  } catch {
+    return { ok: false, error: "the boundary note is not JSON" };
+  }
+}
+
+/** The verification route's canonical form through the crate's own
+ *  encoder: the steps ride as JSON, the canonical bytes and the
+ *  digest come back. */
+export function routeCanonical(core: CoreExports, steps: RouteStepDoc[]): { ok: true; document: CanonicalDocument } | { ok: false; error: string } {
+  const arg = putBytes(core, utf8(JSON.stringify(steps)));
+  const outcome = boundaryJson(core, core.unidpp_s13_route_canonical(arg.ptr, arg.len));
+  return outcome.ok ? { ok: true, document: (outcome.document as unknown as CanonicalDocument) } : outcome;
+}
+
+/** The coverage report's canonical form through the crate's own
+ *  encoder. */
+export function coverageCanonical(core: CoreExports, report: unknown): { ok: true; document: CanonicalDocument } | { ok: false; error: string } {
+  const arg = putBytes(core, utf8(JSON.stringify(report)));
+  const outcome = boundaryJson(core, core.unidpp_s13_coverage_canonical(arg.ptr, arg.len));
+  return outcome.ok ? { ok: true, document: (outcome.document as unknown as CanonicalDocument) } : outcome;
+}
+
+/** The composition law (SI-10): the effective level is the minimum
+ *  over the layer caps and the policy cap; the bottleneck is named. */
+export function composeLaw(core: CoreExports, vector: unknown, policyCap: number): { ok: true; composition: CompositionDoc } | { ok: false; error: string } {
+  const arg = putBytes(core, utf8(JSON.stringify(vector)));
+  const outcome = boundaryJson(core, core.unidpp_s13_compose(arg.ptr, arg.len, BigInt(policyCap)));
+  return outcome.ok ? { ok: true, composition: (outcome.document as unknown as CompositionDoc) } : outcome;
+}

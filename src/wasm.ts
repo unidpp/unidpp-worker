@@ -123,6 +123,9 @@ export interface CoreExports {
     custodian: number,
     custodianLen: number,
   ) => number;
+  unidpp_s13_route_canonical: (steps: number, stepsLen: number) => number;
+  unidpp_s13_coverage_canonical: (report: number, reportLen: number) => number;
+  unidpp_s13_compose: (vector: number, vectorLen: number, policyCap: bigint) => number;
   unidpp_verify_raw: (
     domain: number,
     domainLen: number,

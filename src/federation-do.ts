@@ -19,9 +19,12 @@ import {
   boundarySeed,
   canonicalRequestBytes,
   canonicalResponseBytes,
+  composeLaw,
+  coverageCanonical,
   evaluate,
   keyIdFor,
   requestDigest,
+  routeCanonical,
   seedPublicKey,
   signS13Message,
   verifyS13Message,
@@ -142,6 +145,9 @@ export class S13DO {
     if (path === "/requests" && request.method === "POST") return this.answer(request);
     if (path === "/countersign" && request.method === "POST") return this.countersign(request);
     if (path === "/journal" && request.method === "GET") return this.replay();
+    if (path === "/route/encode" && request.method === "POST") return this.encodeRoute(request);
+    if (path === "/coverage/encode" && request.method === "POST") return this.encodeCoverage(request);
+    if (path === "/compose" && request.method === "POST") return this.compose(request);
     return stamped(404, { error: "no such path" });
   }
 
@@ -563,5 +569,52 @@ export class S13DO {
       governing_policy: response.governing_policy,
       governing_policy_version: response.governing_policy_version,
     };
+  }
+
+  /** The dossier encoders (SI-11/XB-8) and the composition law
+   *  (SI-10), served through the crate's own code on the boundary:
+   *  a route's steps or a coverage report ride as JSON, the
+   *  canonical bytes and the digest come back — the same identities
+   *  the corpus's fixtures pin. */
+  private async encodeRoute(request: Request): Promise<Response> {
+    let v: { steps?: unknown };
+    try {
+      v = (await request.json()) as { steps?: unknown };
+    } catch {
+      return badRequest("invalid JSON body");
+    }
+    if (!Array.isArray(v?.steps)) return badRequest("`steps` is required (a JSON array)");
+    const outcome = routeCanonical(this.core, v.steps as never);
+    if (!outcome.ok) return badRequest(outcome.error);
+    return stamped(200, outcome.document);
+  }
+
+  private async encodeCoverage(request: Request): Promise<Response> {
+    let v: { report?: unknown };
+    try {
+      v = (await request.json()) as { report?: unknown };
+    } catch {
+      return badRequest("invalid JSON body");
+    }
+    if (!v?.report || typeof v.report !== "object") return badRequest("`report` is required");
+    const outcome = coverageCanonical(this.core, v.report);
+    if (!outcome.ok) return badRequest(outcome.error);
+    return stamped(200, outcome.document);
+  }
+
+  private async compose(request: Request): Promise<Response> {
+    let v: { vector?: unknown; policy_cap?: number };
+    try {
+      v = (await request.json()) as { vector?: unknown; policy_cap?: number };
+    } catch {
+      return badRequest("invalid JSON body");
+    }
+    if (!v?.vector || typeof v.vector !== "object") return badRequest("`vector` is required (the six layers)");
+    if (typeof v.policy_cap !== "number" || !Number.isInteger(v.policy_cap) || v.policy_cap < 0) {
+      return badRequest("`policy_cap` must be a non-negative integer");
+    }
+    const outcome = composeLaw(this.core, v.vector, v.policy_cap);
+    if (!outcome.ok) return badRequest(outcome.error);
+    return stamped(200, outcome.composition);
   }
 }

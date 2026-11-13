@@ -21,9 +21,12 @@ import {
   authorityPayloadBytes,
   canonicalRequestBytes,
   canonicalResponseBytes,
+  composeLaw,
+  coverageCanonical,
   hexBytes,
   keyIdFor,
   requestDigest,
+  routeCanonical,
   verifyS13Message,
   bytesHex,
 } from "../src/s13";
@@ -397,5 +400,107 @@ describe("the federation DO", () => {
     expect(answered.signed_response.response.outcome.outcome).toBe("deny");
     expect(answered.signed_response.response.outcome.reason).toContain("eu-static");
     expect(answered.signed_response.response.governing_policy).toBe("");
+  });
+});
+
+describe("the dossier boundary (SI-9/10/11)", () => {
+  const fixture = (name: string): Record<string, unknown> =>
+    JSON.parse(readFileSync(path.join(ROOT, "unidpp-core", "crates", "s13", "fixtures", "canonical", name), "utf8"));
+
+  it("the verification route canonicalizes to the fixture's bytes", () => {
+    const f = fixture("verification-route.json");
+    const route = f.route as { steps: Parameters<typeof routeCanonical>[1] };
+    const outcome = routeCanonical(core, route.steps);
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      expect(outcome.document.canonical_hex).toBe(f.canonical_hex);
+      expect(outcome.document.digest_hex).toBe(f.digest_hex);
+    }
+  });
+
+  it("the coverage report canonicalizes to the fixture's bytes", () => {
+    const f = fixture("coverage-report.json");
+    const outcome = coverageCanonical(core, f.report);
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      expect(outcome.document.canonical_hex).toBe(f.canonical_hex);
+      expect(outcome.document.digest_hex).toBe(f.digest_hex);
+    }
+  });
+
+  it("the composition law takes the minimum and names the bottleneck", () => {
+    const bridged = {
+      transport: "same",
+      protocol: "same",
+      structure: { "bridged-by": "urn:unidpp:mapping:eu-cn" },
+      semantics: { "bridged-by": "urn:unidpp:mapping:eu-cn" },
+      identity: "same",
+      trust: "same",
+    };
+    // A generous policy binds: bridges do not lift a policy cap.
+    const bound = composeLaw(core, bridged, 4);
+    expect(bound.ok).toBe(true);
+    if (bound.ok) {
+      expect(bound.composition.level).toBe(4);
+      expect(bound.composition.bottleneck).toBeNull();
+      expect(bound.composition.policy_bound).toBe(true);
+    }
+    // A structure gap drops the level to that layer alone.
+    const gapped = { ...bridged, structure: "gap" };
+    const dropped = composeLaw(core, gapped, 4);
+    expect(dropped.ok).toBe(true);
+    if (dropped.ok) {
+      expect(dropped.composition.level).toBe(0);
+      expect(dropped.composition.bottleneck).toBe("structure");
+      expect(dropped.composition.policy_bound).toBe(false);
+    }
+    // A transport gap is equally the bottleneck under an open policy.
+    const offline = { ...bridged, transport: "gap" };
+    const down = composeLaw(core, offline, 5);
+    expect(down.ok).toBe(true);
+    if (down.ok) {
+      expect(down.composition.level).toBe(0);
+      expect(down.composition.bottleneck).toBe("transport");
+    }
+  });
+
+  it("the federation DO serves the dossier encoders and the law", async () => {
+    const federation = new S13DO(storage(), {});
+    await serve(federation, "/custodian");
+    const routeFixture = fixture("verification-route.json") as { route: { steps: unknown } };
+    const route = await serve(federation, "/route/encode", {
+      method: "POST",
+      body: JSON.stringify({ steps: routeFixture.route.steps }),
+    });
+    expect(route.status).toBe(200);
+    const routeDoc = (await route.json()) as { digest_hex: string };
+    expect(routeDoc.digest_hex).toBe(
+      (fixture("verification-route.json") as { digest_hex: string }).digest_hex,
+    );
+    const reportFixture = fixture("coverage-report.json");
+    const coverage = await serve(federation, "/coverage/encode", {
+      method: "POST",
+      body: JSON.stringify({ report: reportFixture.report }),
+    });
+    expect(coverage.status).toBe(200);
+    const coverageDoc = (await coverage.json()) as { digest_hex: string };
+    expect(coverageDoc.digest_hex).toBe((reportFixture as { digest_hex: string }).digest_hex);
+    const composition = await serve(federation, "/compose", {
+      method: "POST",
+      body: JSON.stringify({
+        vector: { transport: "same", protocol: "same", structure: "gap", semantics: "same", identity: "same", trust: "same" },
+        policy_cap: 4,
+      }),
+    });
+    expect(composition.status).toBe(200);
+    const law = (await composition.json()) as { level: number; bottleneck: string | null };
+    expect(law.level).toBe(0);
+    expect(law.bottleneck).toBe("structure");
+    // Malformed input states the refusal.
+    const bad = await serve(federation, "/route/encode", {
+      method: "POST",
+      body: JSON.stringify({ steps: [{ step: "nonsense" }] }),
+    });
+    expect(bad.status).toBe(400);
   });
 });

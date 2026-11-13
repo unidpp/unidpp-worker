@@ -303,7 +303,9 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
   // policy, the choreography journals and replays. Tenanted like
   // every other DO: registry-jp.unidpp.org serves its own seam.
   const s13Rest = pathname.startsWith("/s13/") ? pathname.slice("/s13".length) : null;
-  const s13Data = s13Rest?.match(/^\/(nodes|policies|segments|custodian|requests|countersign|journal)($|\/)/);
+  const s13Data = s13Rest?.match(
+    /^\/(nodes|policies|segments|custodian|requests|countersign|journal|route\/encode|coverage\/encode|compose)($|\/)/,
+  );
   if (s13Rest && s13Data) {
     if (!env?.S13) {
       return new Response(
