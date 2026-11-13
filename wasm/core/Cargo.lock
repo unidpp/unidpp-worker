@@ -1025,6 +1025,7 @@ dependencies = [
  "unidpp-event",
  "unidpp-model",
  "unidpp-signatif",
+ "unidpp-tier-a",
  "unidpp-transform",
  "unidpp-verdict",
  "wasm-bindgen",

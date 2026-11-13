@@ -54,6 +54,14 @@ export interface CoreExports {
   unidpp_fixture_lens: (profile: number, profileLen: number) => number;
   unidpp_fixture_passport: () => number;
   unidpp_mapping_validate: (item: number, itemLen: number) => number;
+  unidpp_mint_pack: (
+    passport: number,
+    passportLen: number,
+    seed: number,
+    seedLen: number,
+    suites: number,
+    suitesLen: number,
+  ) => number;
   unidpp_mapping_compose: (
     first: number,
     firstLen: number,

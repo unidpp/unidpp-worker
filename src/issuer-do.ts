@@ -86,6 +86,68 @@ function mintDocument(
   return { ok: true, document };
 }
 
+// The pack signing seed: the deployment's issuer seed (32 hex chars
+// → 32 bytes) or the deterministic dev seed — the same degrade the
+// estate's other operators carry.
+function packSeed(core: CoreExports, envSeed: string | undefined): Uint8Array {
+  const unhex = (hex: string): Uint8Array =>
+    new Uint8Array((hex.match(/../g) ?? []).map((byte) => parseInt(byte, 16)));
+  if (envSeed && /^[0-9a-fA-F]{64}$/.test(envSeed.trim())) {
+    return unhex(envSeed.trim());
+  }
+  const label = new TextEncoder().encode("UNIDPP-ISSUER/PACK-SEED");
+  const labelPtr = core.unidpp_alloc(label.length);
+  new Uint8Array(core.memory.buffer, labelPtr, label.length).set(label);
+  const digestPtr = core.unidpp_alloc(32);
+  core.unidpp_sha256(labelPtr, label.length, digestPtr);
+  const digest = new Uint8Array(core.memory.buffer, digestPtr, 32).slice();
+  core.unidpp_free(labelPtr, label.length);
+  core.unidpp_free(digestPtr, 32);
+  return digest;
+}
+
+function mintPackDocument(
+  core: CoreExports,
+  document: Record<string, unknown>,
+  seed: Uint8Array,
+  suites: string,
+): { ok: true; pack: Record<string, unknown> } | { ok: false; error: string } {
+  const put = (text: string): { ptr: number; len: number } => {
+    const bytes = new TextEncoder().encode(text);
+    const ptr = core.unidpp_alloc(bytes.length);
+    new Uint8Array(core.memory.buffer, ptr, bytes.length).set(bytes);
+    return { ptr, len: bytes.length };
+  };
+  const passport = put(JSON.stringify(document));
+  const suitesText = put(suites);
+  const seedPtr = core.unidpp_alloc(seed.length);
+  new Uint8Array(core.memory.buffer, seedPtr, seed.length).set(seed);
+  const rc = core.unidpp_mint_pack(
+    passport.ptr,
+    passport.len,
+    seedPtr,
+    seed.length,
+    suitesText.ptr,
+    suitesText.len,
+  );
+  [passport, suitesText].forEach((part, i) =>
+    core.unidpp_free(part.ptr, [passport.len, suitesText.len][i]),
+  );
+  core.unidpp_free(seedPtr, seed.length);
+  const notePtr = core.unidpp_alloc(1048576);
+  const noteLen = core.unidpp_note_take(notePtr);
+  const note = new TextDecoder().decode(
+    new Uint8Array(core.memory.buffer, notePtr, Math.max(noteLen, 0)).slice(),
+  );
+  core.unidpp_free(notePtr, 1048576);
+  if (rc !== 0) return { ok: false, error: note || `the pack mint failed (${rc})` };
+  try {
+    return { ok: true, pack: JSON.parse(note) as Record<string, unknown> };
+  } catch {
+    return { ok: false, error: "the pack document is not JSON" };
+  }
+}
+
 export class IssuerDO {
   private passports = new Map<string, PassportRecord>();
   private events: JournalOp[] = [];
@@ -93,7 +155,10 @@ export class IssuerDO {
   private core: CoreExports;
   private loaded = false;
 
-  constructor(stateOrStorage: unknown) {
+  constructor(
+    stateOrStorage: unknown,
+    private readonly env: Record<string, string | undefined> = {},
+  ) {
     const source =
       (stateOrStorage as { storage?: unknown }).storage ?? stateOrStorage;
     this.journal = journalFor(source);
@@ -115,6 +180,10 @@ export class IssuerDO {
     const event = path.match(/^\/passports\/([^/]+)\/events$/);
     if (event && request.method === "POST") {
       return this.appendEvent(request, decodeURIComponent(event[1]));
+    }
+    const pack = path.match(/^\/passports\/([^/]+)\/pack$/);
+    if (pack && request.method === "POST") {
+      return this.mintPack(request, decodeURIComponent(pack[1]));
     }
     const one = path.match(/^\/passports\/([^/]+)$/);
     if (one && request.method === "GET") return this.getOne(decodeURIComponent(one[1]));
@@ -206,6 +275,27 @@ export class IssuerDO {
       events: record.document.events,
       audit_seq: record.audit_seq,
     });
+  }
+
+  private async mintPack(request: Request, passportId: string): Promise<Response> {
+    const record = this.passports.get(passportId);
+    if (!record) return stamped(404, { error: `no passport \`${passportId}\`` });
+    let v: Record<string, unknown> = {};
+    try {
+      const text = await request.text();
+      if (text.trim()) v = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      return badRequest("invalid JSON body");
+    }
+    const suites = typeof (v.suites ?? v.suite) === "string" ? String(v.suites ?? v.suite) : "";
+    const minted = mintPackDocument(
+      this.core,
+      record.document,
+      packSeed(this.core, (this.env as { UNIDPP_ISSUER_SIGN_SEED?: string } | undefined)?.UNIDPP_ISSUER_SIGN_SEED),
+      suites,
+    );
+    if (!minted.ok) return badRequest(minted.error);
+    return stamped(201, { ...minted.pack, passport_id: passportId });
   }
 
   private getOne(passportId: string): Response {

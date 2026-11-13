@@ -576,6 +576,17 @@ pub mod untp;
 #[path = "../../../../unidpp-core/crates/semantics/src/mapping.rs"]
 pub mod semantics_mapping;
 
+// The Tier-A packer (the QR-carrier codec) and the CLI's pack signing:
+// the pack route on the edge mints the same carriers the native
+// issuer serves. The crate-root names are the tier_a layout the
+// path-included sources reference.
+// The CLI's pack signing rides the included packfile (its
+// unidpp_tier_a import resolves against the real crate dependency);
+// the pack route on the edge mints the same carriers the native
+// issuer serves.
+#[path = "../../../../unidpp-cli/src/packfile.rs"]
+pub mod packfile;
+
 use lens::LensManifest;
 use project::project;
 
@@ -946,4 +957,148 @@ pub unsafe extern "C" fn unidpp_mapping_compose(
             -1
         }
     }
+}
+
+/// Mint the Tier-A carrier for one passport: the passport JSON + the
+/// signing seed + the suite token ("ecdsa-p256", or a comma-separated
+/// co-signature list), the carrier document JSON through the note
+/// buffer — the same shape the native issuer serves (pack, bytes,
+/// projected, qr_version, ec, margin, signature, signatures, anchor,
+/// anchors). The clock rides the caller (SystemTime aborts here); the
+/// payload's stamps come from the passport's own log.
+///
+/// # Safety
+/// All pointers name readable memory of the stated lengths.
+#[no_mangle]
+pub unsafe extern "C" fn unidpp_mint_pack(
+    passport_ptr: *const u8,
+    passport_len: usize,
+    seed_ptr: *const u8,
+    seed_len: usize,
+    suites_ptr: *const u8,
+    suites_len: usize,
+) -> i32 {
+    use unidpp_cli::passport::Passport;
+    use unidpp_signatif::Suite;
+    use unidpp_tier_a::{TierAPacker, TierAPayload};
+    let read = |ptr: *const u8, len: usize| -> String {
+        String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned()
+    };
+    let passport_text = read(passport_ptr, passport_len);
+    // The seed rides as raw bytes (a digest — not UTF-8); only the
+    // text arguments go through the lossy read.
+    let seed_bytes = std::slice::from_raw_parts(seed_ptr, seed_len).to_vec();
+    let suites_text = read(suites_ptr, suites_len);
+    std::panic::set_hook(Box::new(|info| {
+        let message = format!("{info}");
+        unsafe {
+            DEBUG_TEXT = Some(format!("pack panic: {message}"));
+        }
+    }));
+    let minted = std::panic::catch_unwind(move || {
+        let passport = Passport::from_json(&passport_text)
+            .map_err(|e| format!("not a passport document: {e}"))?;
+        if seed_bytes.len() != 32 {
+            return Err("the signing seed must be 32 bytes".to_string());
+        }
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&seed_bytes);
+        let suites: Vec<Suite> = if suites_text.is_empty() {
+            vec![Suite::EcdsaP256]
+        } else {
+            suites_text
+                .split(',')
+                .map(|t| match t.trim() {
+                    "ecdsa-p256" => Some(Suite::EcdsaP256),
+                    "sm2" => Some(Suite::Sm2),
+                    "ml-dsa-44" => Some(Suite::MlDsa44),
+                    "ml-dsa-65" => Some(Suite::MlDsa65),
+                    "ml-dsa-87" => Some(Suite::MlDsa87),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| "unknown suite token (expected ecdsa-p256 | sm2 | ml-dsa-*)".to_string())?
+        };
+        let payload = TierAPayload::from_log(
+            &passport.log,
+            passport.product_id.clone(),
+            &passport.resolver_uri,
+            &passport.eo_id,
+            passport.validity,
+            Vec::new(),
+        );
+        let (signed, anchors) =
+            packfile::sign_pack_suites(&payload, &seed, &suites)
+                .map_err(|e| format!("pack signing: {e}"))?;
+        let packer = TierAPacker::new(unidpp_tier_a::qr::EcLevel::M, 40);
+        let packed = packer.pack(&signed).map_err(|e| e.to_string())?;
+        let signature_entries: Vec<serde_json::Value> = anchors
+            .iter()
+            .map(|(public, key_id)| {
+                serde_json::json!({
+                    "suite": public.suite().to_string(),
+                    "key_id": key_id.to_string(),
+                    "anchor": hex_of_upper(public.as_bytes()),
+                })
+            })
+            .collect();
+        let anchors_map: serde_json::Map<String, serde_json::Value> = anchors
+            .iter()
+            .map(|(public, key_id)| {
+                (
+                    public.suite().to_string(),
+                    serde_json::Value::String(hex_of_upper(public.as_bytes())),
+                )
+            })
+            .collect();
+        let document = serde_json::json!({
+            "passport_id": passport.passport_id.as_str(),
+            "encoding": "hex",
+            "pack": hex_of_upper(packed.as_slice()),
+            "bytes": packed.used,
+            "projected": packed.projected,
+            "qr_version": packed.version,
+            "ec": "m",
+            "margin": packed.margin(),
+            "signature": signature_entries.first().cloned().unwrap_or(serde_json::Value::Null),
+            "signatures": signature_entries,
+            "anchor": signature_entries
+                .first()
+                .and_then(|s| s.get("anchor").cloned())
+                .unwrap_or(serde_json::Value::Null),
+            "anchors": anchors_map,
+        });
+        serde_json::to_string(&document).map_err(|e| e.to_string())
+    });
+    let _ = std::panic::take_hook();
+    let outcome = match minted {
+        Ok(Ok(text)) => {
+            unsafe {
+                DEBUG_TEXT = Some(text);
+            }
+            0
+        }
+        Ok(Err(message)) => {
+            unsafe {
+                DEBUG_TEXT = Some(format!("pack refused: {message}"));
+            }
+            -1
+        }
+        Err(_) => {
+            let message = unsafe { DEBUG_TEXT.take() }.unwrap_or_default();
+            unsafe {
+                DEBUG_TEXT = Some(format!(
+                    "pack panicked: {}",
+                    if message.is_empty() { "no message".into() } else { message }
+                ));
+            }
+            -2
+        }
+    };
+    outcome
+}
+
+fn hex_of_upper(bytes: &[u8]) -> String {
+    // The CLI's hex_encode alphabet: lowercase (the corpus's case).
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

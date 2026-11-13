@@ -19,6 +19,7 @@ unidpp-signatif = { path = "../../../unidpp-signatif" }
 unidpp-transform = { path = "../../../unidpp-core/crates/transform" }
 unidpp-verdict = { path = "../../../unidpp-core/crates/verdict" }
 unidpp-cli = { path = "../../../unidpp-cli" }
+unidpp-tier-a = { path = "../../../unidpp-core/crates/tier_a" }
 
 # The wasm target: getrandom 0.2 (a transitive dep of the signing
 # stack) needs its js bindings on unknown-unknown.
