@@ -19,7 +19,7 @@
   // namespaces, its own journals, its own identity). app.unidpp.org
   // stays the live estate.
   "vars": {
-    "TENANT_HOSTS": "{\"demo.unidpp.org\": \"demo\"}"
+    "TENANT_HOSTS": "{\"demo.unidpp.org\": \"demo\", \"registry-jp.unidpp.org\": \"jp\"}"
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RegistryDO", "LogDO", "TrustDO", "IssuerDO", "ArchiveDO", "IdentityDO"] }],
   "build": {
