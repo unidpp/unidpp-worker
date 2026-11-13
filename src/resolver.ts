@@ -136,7 +136,9 @@ function linksetDocument(
   passportId: string,
   origin: string,
 ): Record<string, unknown> {
-  const anchor = `urn:unidpp:passport:${passportId}`;
+  // The anchor IS the passport's URN; the estate's minted passports
+  // already carry the urn: scheme, so never prefix twice.
+  const anchor = passportId.startsWith("urn:") ? passportId : `urn:unidpp:passport:${passportId}`;
   const link = (href: string, rel: string, type: string, title: string) => ({
     href,
     rel,

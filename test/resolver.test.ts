@@ -86,7 +86,7 @@ describe("the resolution surface", () => {
     const linkset = (await served.json()) as {
       linkset: { anchor: string; link: { href: string; rel: string }[] }[];
     };
-    expect(linkset.linkset[0].anchor).toBe(`urn:unidpp:passport:${passportId}`);
+    expect(linkset.linkset[0].anchor).toBe(passportId);
     const rels = linkset.linkset[0].link.map((l) => l.rel);
     expect(rels).toContain("dpp");
     expect(rels).toContain("dpp-rendering");
@@ -105,7 +105,7 @@ describe("the resolution surface", () => {
     expect(served.status).toBe(200);
     if (served.status !== 200) console.log("DL-DEBUG:", await served.text());
     const linkset = (await served.json()) as { linkset: { anchor: string }[] };
-    expect(linkset.linkset[0].anchor).toBe(`urn:unidpp:passport:${passportId}`);
+    expect(linkset.linkset[0].anchor).toBe(passportId);
   });
 
   it("redirects the GS1 path form to the default link", async () => {
