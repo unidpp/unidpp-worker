@@ -114,6 +114,27 @@ export interface CoreExports {
     validToLen: number,
   ) => number;
   unidpp_note_take: (out: number) => number;
+  unidpp_note_capacity: () => number;
+  unidpp_s13_evaluate: (
+    policy: number,
+    policyLen: number,
+    request: number,
+    requestLen: number,
+    custodian: number,
+    custodianLen: number,
+  ) => number;
+  unidpp_verify_raw: (
+    domain: number,
+    domainLen: number,
+    suite: number,
+    suiteLen: number,
+    publicKey: number,
+    publicKeyLen: number,
+    payload: number,
+    payloadLen: number,
+    signature: number,
+    signatureLen: number,
+  ) => number;
   unidpp_sth_verify: (
     publicKey: number,
     logId: number,

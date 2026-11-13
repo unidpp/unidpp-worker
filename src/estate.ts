@@ -101,6 +101,7 @@ interface Env {
   ISSUER?: DoNamespace;
   ARCHIVE?: DoNamespace;
   IDENTITY?: DoNamespace;
+  S13?: DoNamespace;
   UNIDPP_SERVER_OPERATOR_TOKEN?: string;
   /** Host→tenant dispatch (REARCH R6 on Workers): a JSON map
    * {"dpp.acme.example.org": "acme"} — a request whose Host names a
@@ -295,6 +296,24 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
     const stub = namespace(env.TRUST, "estate");
     const inner = new URL(request.url);
     inner.pathname = trustRest;
+    return stub!.fetch(new Request(inner.toString(), request));
+  }
+  // The federation surface (the audit's cross-border gap): the S13
+  // seam on the edge — signed requests answer under the governing
+  // policy, the choreography journals and replays. Tenanted like
+  // every other DO: registry-jp.unidpp.org serves its own seam.
+  const s13Rest = pathname.startsWith("/s13/") ? pathname.slice("/s13".length) : null;
+  const s13Data = s13Rest?.match(/^\/(nodes|policies|segments|custodian|requests|countersign|journal)($|\/)/);
+  if (s13Rest && s13Data) {
+    if (!env?.S13) {
+      return new Response(
+        JSON.stringify({ error: "the federation Durable Object is not bound" }),
+        { status: 503, headers: { "content-type": "application/json" } },
+      );
+    }
+    const stub = namespace(env.S13, "estate");
+    const inner = new URL(request.url);
+    inner.pathname = s13Rest;
     return stub!.fetch(new Request(inner.toString(), request));
   }
   switch (pathname) {

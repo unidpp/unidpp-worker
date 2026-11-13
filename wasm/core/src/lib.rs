@@ -506,7 +506,11 @@ pub unsafe extern "C" fn unidpp_declaration_issue(
         version,
         postures,
         &valid_from,
-        if valid_to.is_empty() { None } else { Some(valid_to.as_str()) },
+        if valid_to.is_empty() {
+            None
+        } else {
+            Some(valid_to.as_str())
+        },
         &key,
     );
     match issued {
@@ -543,6 +547,8 @@ pub unsafe extern "C" fn unidpp_declaration_issue(
 pub mod aggregate;
 #[path = "../../../../unidpp-projector/src/codelist.rs"]
 pub mod codelist;
+#[path = "../../../../unidpp-projector/src/fixtures.rs"]
+pub mod fixtures;
 #[path = "../../../../unidpp-projector/src/lens.rs"]
 pub mod lens;
 #[path = "../../../../unidpp-projector/src/primmel.rs"]
@@ -551,23 +557,21 @@ pub mod primmel;
 pub mod project;
 #[path = "../../../../unidpp-projector/src/twin.rs"]
 pub mod twin;
-#[path = "../../../../unidpp-projector/src/fixtures.rs"]
-pub mod fixtures;
 
 // The gateway's render surface, THE SAME SOURCE the native gateway
 // compiles. `crate::source` is the boundary's own carrier (the
 // gateway's source.rs is a loopback HTTP client with no meaning on
 // the edge); the passport and the profile layer ride the estate's
 // issuer and registry DOs on the TS side.
-pub mod source;
-#[path = "../../../../unidpp-gateway/src/verdict.rs"]
-pub mod verdict;
 #[path = "../../../../unidpp-gateway/src/canonical.rs"]
 pub mod canonical;
 #[path = "../../../../unidpp-gateway/src/en18222.rs"]
 pub mod en18222;
+pub mod source;
 #[path = "../../../../unidpp-gateway/src/untp.rs"]
 pub mod untp;
+#[path = "../../../../unidpp-gateway/src/verdict.rs"]
+pub mod verdict;
 
 // The clause-15 mapping discipline (the three tiers): the same
 // MappingItem the semantics crate compiles, included by path, so the
@@ -666,7 +670,11 @@ pub unsafe extern "C" fn unidpp_view_project(
             unsafe {
                 DEBUG_TEXT = Some(format!(
                     "view panicked: {}",
-                    if message.is_empty() { "no message".into() } else { message }
+                    if message.is_empty() {
+                        "no message".into()
+                    } else {
+                        message
+                    }
                 ));
             }
             -2
@@ -682,12 +690,9 @@ pub unsafe extern "C" fn unidpp_view_project(
 /// # Safety
 /// All pointers name readable memory of the stated lengths.
 #[no_mangle]
-pub unsafe extern "C" fn unidpp_fixture_lens(
-    profile_ptr: *const u8,
-    profile_len: usize,
-) -> i32 {
-    let profile = String::from_utf8_lossy(std::slice::from_raw_parts(profile_ptr, profile_len))
-        .into_owned();
+pub unsafe extern "C" fn unidpp_fixture_lens(profile_ptr: *const u8, profile_len: usize) -> i32 {
+    let profile =
+        String::from_utf8_lossy(std::slice::from_raw_parts(profile_ptr, profile_len)).into_owned();
     let lens = fixtures::fixture_lens(&profile);
     match lens {
         Some(lens) => {
@@ -756,10 +761,9 @@ pub unsafe extern "C" fn unidpp_render(
     now_secs: i64,
 ) -> i32 {
     use unidpp_cli::passport::Passport;
-    let read =
-        |ptr: *const u8, len: usize| -> String {
-            String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned()
-        };
+    let read = |ptr: *const u8, len: usize| -> String {
+        String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned()
+    };
     let protocol = read(protocol_ptr, protocol_len);
     let passport_text = read(passport_ptr, passport_len);
     let profiles_text = read(profiles_ptr, profiles_len);
@@ -822,15 +826,21 @@ pub unsafe extern "C" fn unidpp_render(
         };
         match protocol.as_str() {
             "en18222" => {
-                let representation = en18222::Representation::parse(
-                    if representation.is_empty() { None } else { Some(&representation) },
-                )
+                let representation = en18222::Representation::parse(if representation.is_empty() {
+                    None
+                } else {
+                    Some(&representation)
+                })
                 .map_err(|e| e)?;
                 let document = en18222::render(&gateway_passport, representation, at);
                 serde_json::to_string(&document).map_err(|e| e.to_string())
             }
             "untp" => {
-                let required = if freshness.is_empty() { None } else { Some(freshness.as_str()) };
+                let required = if freshness.is_empty() {
+                    None
+                } else {
+                    Some(freshness.as_str())
+                };
                 Ok(untp::render_triad(&gateway_passport, at, required).to_string())
             }
             other => Err(format!(
@@ -857,7 +867,11 @@ pub unsafe extern "C" fn unidpp_render(
             unsafe {
                 DEBUG_TEXT = Some(format!(
                     "render panicked: {}",
-                    if message.is_empty() { "no message".into() } else { message }
+                    if message.is_empty() {
+                        "no message".into()
+                    } else {
+                        message
+                    }
                 ));
             }
             -2
@@ -873,17 +887,13 @@ pub unsafe extern "C" fn unidpp_render(
 /// # Safety
 /// All pointers name readable memory of the stated lengths.
 #[no_mangle]
-pub unsafe extern "C" fn unidpp_mapping_validate(
-    item_ptr: *const u8,
-    item_len: usize,
-) -> i32 {
+pub unsafe extern "C" fn unidpp_mapping_validate(item_ptr: *const u8, item_len: usize) -> i32 {
     let text = String::from_utf8_lossy(std::slice::from_raw_parts(item_ptr, item_len)).into_owned();
     let parsed: Result<semantics_mapping::MappingItem, _> = serde_json::from_str(&text);
     match parsed {
         Ok(item) => {
-            let hex = |bytes: &[u8]| -> String {
-                bytes.iter().map(|b| format!("{b:02x}")).collect()
-            };
+            let hex =
+                |bytes: &[u8]| -> String { bytes.iter().map(|b| format!("{b:02x}")).collect() };
             let document = serde_json::json!({
                 "canonical_hex": hex(&item.canonical_bytes()),
                 "digest_hex": hex(&item.digest()),
@@ -927,10 +937,9 @@ pub unsafe extern "C" fn unidpp_mapping_compose(
         String::from_utf8_lossy(std::slice::from_raw_parts(first_ptr, first_len)).into_owned();
     let second_text =
         String::from_utf8_lossy(std::slice::from_raw_parts(second_ptr, second_len)).into_owned();
-    let parse =
-        |text: &str| -> Result<semantics_mapping::MappingItem, String> {
-            serde_json::from_str(text).map_err(|e| format!("a mapping item does not parse: {e}"))
-        };
+    let parse = |text: &str| -> Result<semantics_mapping::MappingItem, String> {
+        serde_json::from_str(text).map_err(|e| format!("a mapping item does not parse: {e}"))
+    };
     let outcome = (|| -> Result<serde_json::Value, String> {
         let first = parse(&first_text)?;
         let second = parse(&second_text)?;
@@ -1017,7 +1026,9 @@ pub unsafe extern "C" fn unidpp_mint_pack(
                     _ => None,
                 })
                 .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| "unknown suite token (expected ecdsa-p256 | sm2 | ml-dsa-*)".to_string())?
+                .ok_or_else(|| {
+                    "unknown suite token (expected ecdsa-p256 | sm2 | ml-dsa-*)".to_string()
+                })?
         };
         let payload = TierAPayload::from_log(
             &passport.log,
@@ -1027,9 +1038,8 @@ pub unsafe extern "C" fn unidpp_mint_pack(
             passport.validity,
             Vec::new(),
         );
-        let (signed, anchors) =
-            packfile::sign_pack_suites(&payload, &seed, &suites)
-                .map_err(|e| format!("pack signing: {e}"))?;
+        let (signed, anchors) = packfile::sign_pack_suites(&payload, &seed, &suites)
+            .map_err(|e| format!("pack signing: {e}"))?;
         let packer = TierAPacker::new(unidpp_tier_a::qr::EcLevel::M, 40);
         let packed = packer.pack(&signed).map_err(|e| e.to_string())?;
         let signature_entries: Vec<serde_json::Value> = anchors
@@ -1089,7 +1099,11 @@ pub unsafe extern "C" fn unidpp_mint_pack(
             unsafe {
                 DEBUG_TEXT = Some(format!(
                     "pack panicked: {}",
-                    if message.is_empty() { "no message".into() } else { message }
+                    if message.is_empty() {
+                        "no message".into()
+                    } else {
+                        message
+                    }
                 ));
             }
             -2
@@ -1101,4 +1115,108 @@ pub unsafe extern "C" fn unidpp_mint_pack(
 fn hex_of_upper(bytes: &[u8]) -> String {
     // The CLI's hex_encode alphabet: lowercase (the corpus's case).
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+// ---------------------------------------------------------------------------
+// The S13 federation boundary (the adoption audit's cross-border gap):
+// the seam's policy evaluation stays the s13 crate's own `evaluate`
+// (the four outcomes, the stated denial, the governing-policy citation),
+// and the trust layer's signature verification rides the signatif
+// crate's own slot verify — the same bytes the native estate signs.
+// ---------------------------------------------------------------------------
+
+/// Evaluate one S13 request under one grid policy: the policy and the
+/// request ride as JSON (the grid's PolicyObject serde form), the
+/// response JSON (digest binding, outcome, governing policy citation)
+/// returns through the note buffer.
+///
+/// # Safety
+/// All pointers name readable memory of the stated lengths.
+#[no_mangle]
+pub unsafe extern "C" fn unidpp_s13_evaluate(
+    policy_ptr: *const u8,
+    policy_len: usize,
+    request_ptr: *const u8,
+    request_len: usize,
+    custodian_ptr: *const u8,
+    custodian_len: usize,
+) -> i32 {
+    use unidpp_grid::PolicyObject;
+    use unidpp_s13::{S13Request, S13Response};
+    let read = |ptr: *const u8, len: usize| -> String {
+        String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned()
+    };
+    let outcome = (|| -> Result<String, String> {
+        let policy: PolicyObject = serde_json::from_str(&read(policy_ptr, policy_len))
+            .map_err(|e| format!("the policy does not parse: {e}"))?;
+        let request: S13Request = serde_json::from_str(&read(request_ptr, request_len))
+            .map_err(|e| format!("the request does not parse: {e}"))?;
+        let response =
+            S13Response::evaluate(&request, &policy, &read(custodian_ptr, custodian_len));
+        serde_json::to_string(&response).map_err(|e| e.to_string())
+    })();
+    match outcome {
+        Ok(text) => {
+            unsafe {
+                DEBUG_TEXT = Some(text);
+            }
+            0
+        }
+        Err(message) => {
+            unsafe {
+                DEBUG_TEXT = Some(format!("s13 refused: {message}"));
+            }
+            -1
+        }
+    }
+}
+
+/// Verify a domain-framed signature under one public key — the
+/// general verify the S13 trust layer needs (the requester's, the
+/// custodian's, the authority's slots all ride the S13-MESSAGE
+/// domain over canonical bytes). 1 verifies, 0 refuses, -1 on shape
+/// errors (an unknown domain or suite token).
+///
+/// # Safety
+/// All pointers name readable memory of the stated lengths.
+#[no_mangle]
+pub unsafe extern "C" fn unidpp_verify_raw(
+    domain_ptr: *const u8,
+    domain_len: usize,
+    suite_ptr: *const u8,
+    suite_len: usize,
+    public_ptr: *const u8,
+    public_len: usize,
+    payload_ptr: *const u8,
+    payload_len: usize,
+    sig_ptr: *const u8,
+    sig_len: usize,
+) -> i32 {
+    let read = |ptr: *const u8, len: usize| -> String {
+        String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned()
+    };
+    let domain = match domain_token(&read(domain_ptr, domain_len)) {
+        Some(domain) => domain,
+        None => return -1,
+    };
+    let suite = match read(suite_ptr, suite_len).as_str() {
+        "ed25519" => Suite::Ed25519,
+        "ecdsa-p256" => Suite::EcdsaP256,
+        _ => return -1,
+    };
+    let public_bytes = std::slice::from_raw_parts(public_ptr, public_len);
+    let key = match unidpp_signatif::PublicKey::from_bytes_in(suite, public_bytes) {
+        Ok(key) => key,
+        Err(_) => return -1,
+    };
+    let payload = std::slice::from_raw_parts(payload_ptr, payload_len);
+    let slot = SignatureSlot {
+        suite,
+        key_id: unidpp_signatif::KeyId::of(&key),
+        signature: Some(std::slice::from_raw_parts(sig_ptr, sig_len).to_vec()),
+    };
+    match slot.verify(domain, payload, &key) {
+        Ok(()) => 1,
+        Err(_) => 0,
+    }
 }

@@ -9,10 +9,11 @@ import { TrustDO } from "./trust-do";
 import { IssuerDO } from "./issuer-do";
 import { ArchiveDO } from "./archive-do";
 import { IdentityDO } from "./identity-do";
+import { S13DO } from "./federation-do";
 import { mountWorkerCore, useWorkerCore } from "./mount";
 import { CoreExports } from "./wasm";
 
-export { RegistryDO, LogDO, TrustDO, IssuerDO, ArchiveDO, IdentityDO };
+export { RegistryDO, LogDO, TrustDO, IssuerDO, ArchiveDO, IdentityDO, S13DO };
 
 export default {
   async fetch(request: Request, env: unknown, _ctx: unknown): Promise<Response> {
