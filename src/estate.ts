@@ -109,6 +109,7 @@ interface Env {
   TENANT_HOSTS?: string;
   UNIDPP_CONSOLE_ADMIN_TOKEN?: string;
   UNIDPP_DESIGNER_SIGN_SEED?: string;
+  RESOLVER_ORIGIN?: string;
   ARCHIVE_BUCKET?: { put(key: string, value: string): Promise<unknown>; get(key: string): Promise<{ text(): Promise<string> } | null> };
 }
 
@@ -213,6 +214,23 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
   // The render surface (REARCH R12 S5-serve): the EN 18222 document
   // and the UNTP triad computed through the wasm boundary — the same
   // renderers the native gateway compiles.
+  // The resolution surface (the audit's gap 1 closes on the edge):
+  // the passport's resolver_uri promise answers here.
+  if (pathname === "/resolver/resolve") {
+    const { resolveQuery } = await import("./resolver");
+    return resolveQuery(request, {
+      ISSUER: env?.ISSUER,
+      RESOLVER_ORIGIN: env?.RESOLVER_ORIGIN,
+    });
+  }
+  if (pathname.startsWith("/resolver/")) {
+    const segments = pathname.slice("/resolver/".length).split("/").filter(Boolean);
+    const { resolvePath } = await import("./resolver");
+    return resolvePath(segments, request, {
+      ISSUER: env?.ISSUER,
+      RESOLVER_ORIGIN: env?.RESOLVER_ORIGIN,
+    });
+  }
   const renderRest = pathname.startsWith("/render/") ? pathname.slice("/render".length) : null;
   if (renderRest && /^\/(en18222|untp)\//.test(renderRest)) {
     const { render } = await import("./render");
