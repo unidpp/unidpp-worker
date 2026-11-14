@@ -12,7 +12,7 @@ import { CoreExports } from "../src/wasm";
 import { useWorkerCore } from "../src/mount";
 import { IssuerDO } from "../src/issuer-do";
 import { RegistryDO } from "../src/registry-do";
-import { consoleSurface } from "../src/console";
+import { consoleSurface, type DoNamespace } from "../src/console";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const bytes = readFileSync(path.join(HERE, "..", "src", "core_bg.wasm"));
@@ -277,3 +277,33 @@ describe("the console surface", () => {
     expect(html).toContain("{");
   });
 });
+describe("the federation page", () => {
+  it("renders the seam's state from the federation DO", async () => {
+    const { S13DO } = await import("../src/federation-do");
+    const federation = new S13DO(storage(), {});
+    await federation.fetch(new Request("https://do.internal/custodian"));
+    await federation.fetch(new Request("https://do.internal/nodes", {
+      method: "POST",
+      body: JSON.stringify({ node_id: "de-zoll", suite: "ed25519", public_hex: "ab".repeat(32) }),
+    }));
+    const page = await serve("/federation", {}, { S13: fakeNamespace(federation) });
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    expect(html).toContain("unidpp-custodian");
+    expect(html).toContain("de-zoll");
+    expect(html).toContain("The journal replays clean");
+  });
+
+  it("an unbound federation DO states the refusal", async () => {
+    const page = await serve("/federation", {}, {});
+    const html = await page.text();
+    expect(html).toContain("does not answer");
+  });
+});
+
+function fakeNamespace(federation: { fetch(request: Request): Promise<Response> }): DoNamespace {
+  return {
+    idFromName: (name: string) => ({ toString: () => name }),
+    get: () => ({ fetch: (request: Request) => federation.fetch(request) }),
+  };
+}

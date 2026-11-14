@@ -20,6 +20,7 @@ export interface ConsoleEnv {
   REGISTRY?: DoNamespace;
   TRUST?: DoNamespace;
   ARCHIVE?: DoNamespace;
+  S13?: DoNamespace;
   UNIDPP_CONSOLE_ADMIN_TOKEN?: string;
   TENANT_HOSTS?: string;
   /** The dispatching tenant (the router's Host decision); the
@@ -53,6 +54,7 @@ const PAGES: ReadonlyArray<readonly [string, string]> = [
   ["/egress", "egress"],
   ["/feedback", "feedback"],
   ["/coverage", "coverage"],
+  ["/federation", "federation"],
   ["/declarations", "declarations"],
   ["/carrier", "carrier"],
 ];
@@ -286,6 +288,72 @@ async function page(pathname: string, request: Request, env: ConsoleEnv): Promis
     case "/feedback": {
       const note = `<p>The consumer-reports channel rides the relay surface (authentication-free by contract); the estate keeps no report store on the edge.</p>`;
       return htmlResponse(html("Feedback", "feedback", note));
+    }
+    case "/federation": {
+      // The seam's state, read from the estate's own federation DO:
+      // the custodian's keys, the registered peers, the governing
+      // policies, the segment pins, and the journal replay with its
+      // decisions in sequence.
+      const body = async (): Promise<string> => {
+        const custodian = await doJson(env.S13, "/custodian", env.tenant);
+        const nodes = (await doJson(env.S13, "/nodes", env.tenant)) as { count?: number; nodes?: { node_id?: string; suite?: string; key_id?: string }[] } | null;
+        const policies = (await doJson(env.S13, "/policies", env.tenant)) as { count?: number; policies?: { policy_id?: string; version?: number; authority?: string; reveal?: string }[] } | null;
+        const segments = (await doJson(env.S13, "/segments", env.tenant)) as { count?: number; segments?: { segment?: string; policy_id?: string; version?: number }[] } | null;
+        const journal = (await doJson(env.S13, "/journal", env.tenant)) as { count?: number; valid?: boolean; entry?: number; decisions?: { outcome?: string; governing_policy?: string }[]; error?: string } | null;
+        if (!custodian) {
+          return `<p class="warn">The federation Durable Object is not bound; the seam does not answer.</p>`;
+        }
+        const parts: string[] = [];
+        parts.push(
+          `<p>The custodian <strong>${esc(custodian.custodian)}</strong> answers under key ${esc(custodian.key_id)}; the policy authority <strong>${esc(custodian.authority)}</strong> counter-signs under ${esc(custodian.authority_key_id)}.</p>`,
+        );
+        parts.push(
+          `<h2>Registered peers</h2>` +
+            (nodes && nodes.count
+              ? table(
+                  ["node", "suite", "key id"],
+                  (nodes.nodes ?? []).map((n) => [esc(n.node_id), esc(n.suite), esc(n.key_id)]),
+                )
+              : `<p>No peer has registered its key yet; a signed request would refuse before any evaluation.</p>`),
+        );
+        parts.push(
+          `<h2>Governing policies</h2>` +
+            (policies && policies.count
+              ? table(
+                  ["policy", "version", "authority", "reveal class"],
+                  (policies.policies ?? []).map((p) => [
+                    esc(p.policy_id),
+                    esc(p.version),
+                    esc(p.authority),
+                    esc(p.reveal),
+                  ]),
+                )
+              : `<p>No policy is registered; every segment denies, stated.</p>`),
+        );
+        parts.push(
+          `<h2>Segment pins</h2>` +
+            (segments && segments.count
+              ? table(
+                  ["segment", "governing policy", "version"],
+                  (segments.segments ?? []).map((s) => [esc(s.segment), esc(s.policy_id), esc(s.version)]),
+                )
+              : `<p>No segment is pinned.</p>`),
+        );
+        const replay = journal
+          ? journal.valid === false
+            ? `<p class="warn">The journal FAILED its replay at entry ${esc(journal.entry ?? "?")}: ${esc(journal.error)}.</p>`
+            : `<p>The journal replays clean: ${esc(journal.count ?? 0)} journaled messages, ${esc(journal.decisions?.length ?? 0)} decisions in sequence.</p>` +
+              (journal.decisions?.length
+                ? table(
+                    ["#", "outcome", "governing policy"],
+                    journal.decisions.map((d, i) => [esc(i + 1), esc(d.outcome), esc(d.governing_policy)]),
+                  )
+                : "")
+          : `<p class="warn">The journal does not answer.</p>`;
+        parts.push(`<h2>The choreography journal</h2>${replay}`);
+        return parts.join("");
+      };
+      return htmlResponse(html("Federation", "federation", await body()));
     }
     case "/coverage": {
       // The journey computes: the views surface runs in process.

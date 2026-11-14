@@ -250,6 +250,7 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
       REGISTRY: env?.REGISTRY,
       TRUST: env?.TRUST,
       ARCHIVE: env?.ARCHIVE,
+      S13: env?.S13,
       UNIDPP_CONSOLE_ADMIN_TOKEN: env?.UNIDPP_CONSOLE_ADMIN_TOKEN,
       UNIDPP_DESIGNER_SIGN_SEED: env?.UNIDPP_DESIGNER_SIGN_SEED,
       TENANT_HOSTS: env?.TENANT_HOSTS,
