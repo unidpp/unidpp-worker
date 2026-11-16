@@ -40,7 +40,23 @@ export interface ParsedIdentifier {
 /** Parse the identifier forms the native resolver accepts. `dlPath`
  *  carries the GS1 Digital Link path segments (01/..., 21/...). */
 export function parseIdentifier(input: string, dlPath?: string[]): ParsedIdentifier | null {
-  const text = input.trim();
+  let text = input.trim();
+  // The documented (native) grammar's scheme prefixes: the canonical
+  // GS1 element string and the ISO/IEC 15459 URN both ride their
+  // scheme on the wire. `gs1:(01)…` parses as the element string it
+  // wraps; `iso-15459:urn:…` parses as the URN it carries.
+  if (text.startsWith("gs1:")) {
+    const body = text.slice(4);
+    // The canonical form wraps each AI: `(01)GTIN[(10)L][(21)S]` —
+    // unwrap the (01), then give every later AI its `+` separator.
+    if (body.startsWith("(01)")) {
+      text = `01+${body.slice(4).replace(/\((\d\d)\)/g, "+$1+")}`;
+    } else {
+      text = body;
+    }
+  } else if (text.startsWith("iso-15459:")) {
+    text = text.slice("iso-15459:".length);
+  }
   if (dlPath && dlPath.length >= 2) {
     // GS1 Digital Link path: /01/<gtin14>[/10/<lot>][/21/<serial>]
     const map: Record<string, string> = {};

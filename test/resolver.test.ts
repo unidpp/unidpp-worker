@@ -180,3 +180,39 @@ describe("the resolution surface's discovery document", () => {
     }
   });
 });
+
+describe("the documented grammar (the native forms on the edge)", () => {
+  it("gs1:(01)… canonical element strings resolve", async () => {
+    const handle = (await import("../src/estate")).handle;
+    const response = await handle(
+      new Request(
+        "https://app.unidpp.org/resolver/resolve?identifier=urn:unidpp:passport:absent",
+      ),
+      {},
+    );
+    void response;
+    const mod = await import("../src/resolver");
+    const parsed = mod.parseIdentifier("gs1:(01)08712345000004");
+    expect(parsed).toEqual({ scheme: "gtin", key: "08712345000004" });
+    const withLot = mod.parseIdentifier("gs1:(01)08712345000004(10)LOT7");
+    expect(withLot).toEqual({
+      scheme: "gtin",
+      key: "08712345000004",
+      lot: "LOT7",
+    });
+  });
+
+  it("iso-15459: prefixed URNs resolve to the passport", async () => {
+    const mod = await import("../src/resolver");
+    const parsed = mod.parseIdentifier("iso-15459:urn:unidpp:passport:cli-13eb3215ea52");
+    expect(parsed).toEqual({
+      scheme: "passport",
+      key: "urn:unidpp:passport:cli-13eb3215ea52",
+    });
+  });
+
+  it("a gs1: form with a bad check digit still refuses", async () => {
+    const mod = await import("../src/resolver");
+    expect(mod.parseIdentifier("gs1:(01)08712345000005")).toBeNull();
+  });
+});
