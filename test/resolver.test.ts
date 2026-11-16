@@ -159,3 +159,24 @@ describe("the resolution surface", () => {
     expect(bad.status).toBe(400);
   });
 });
+
+describe("the resolution surface's discovery document", () => {
+  it("states the surface without exposing identifiers", async () => {
+    const mod = await import("../src/resolver");
+    const doc = mod.discoveryDocument("https://app.unidpp.org");
+    expect(doc.profile).toBe("https://unidpp.org/ns/resolver/1.0");
+    expect((doc.identifierKeys as Record<string, unknown>).gs1CheckDigit).toBe(true);
+    expect((doc.enumerationResistance as Record<string, unknown>).identifierListing).toBe("none");
+    expect((doc.entryPoints as Record<string, unknown>).queryForm).toContain("/resolve?identifier=");
+  });
+
+  it("serves at the root and the well-known path", async () => {
+    const { handle } = await import("../src/estate");
+    for (const path of ["/resolver", "/resolver/", "/resolver/.well-known/unidpp-resolver"]) {
+      const response = await handle(new Request(`https://app.unidpp.org${path}`), {});
+      expect(response.status).toBe(200);
+      const doc = (await response.json()) as Record<string, unknown>;
+      expect(doc.service).toBe("unidpp");
+    }
+  });
+});

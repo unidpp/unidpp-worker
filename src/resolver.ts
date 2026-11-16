@@ -166,6 +166,60 @@ function linksetDocument(
   };
 }
 
+/** The discovery document: what this deployment's resolution surface
+ *  serves, stated without exposing registered identifiers (I12:
+ *  verifiable without being browsable). Mirrored from the native
+ *  resolver's document, narrowed to the edge surface's honest
+ *  capabilities. */
+export function discoveryDocument(origin: string): Record<string, unknown> {
+  return {
+    profile: "https://unidpp.org/ns/resolver/1.0",
+    service: "unidpp",
+    runtime: "cloudflare-workers",
+    linkset: {
+      mediaType: "application/linkset+json",
+      specification: "https://www.rfc-editor.org/rfc/rfc9264",
+      parameters: {
+        anchor: "identifier (ISO/IEC 15459 URN, canonical GS1 element string, GS1 Digital Link URL, or bare GTIN)",
+        uri: "target href",
+        rel: "linkType",
+      },
+    },
+    identifierKeys: {
+      schemes: ["gs1", "iso-15459"],
+      gs1ApplicationIdentifiers: ["01", "10", "21"],
+      gs1CheckDigit: true,
+      carrierSyntaxes: [
+        "gs1-application-identifier-element-string",
+        "gs1-digital-link-uri",
+        "iso-15459-urn",
+        "bare-gtin",
+      ],
+    },
+    entryPoints: {
+      queryForm: "/resolve?identifier=<identifier> (or carrier=<carrier>, mutually exclusive)",
+      pathForm: "/<AI>/<key> (303 to the default link)",
+      linksetPathForm: "/<AI>/<key>/linkset (the linkset document)",
+      wellKnown: "/.well-known/unidpp-resolver (this document)",
+    },
+    defaultLinkRule: {
+      linkRel: "dpp",
+      target: "the estate's lens view for the resolved passport",
+      redirect: "303 See Other on the bare path form",
+    },
+    nationalIntermediary: {
+      enabled: false,
+    },
+    enumerationResistance: {
+      unknownIdentifier: "404",
+      darkIdentifier: "404 (byte-identical to unknown)",
+      identifierListing: "none",
+    },
+    // The origin names itself so linkset targets stay absolute.
+    origin,
+  };
+}
+
 export async function resolveQuery(request: Request, env: ResolverEnv): Promise<Response> {
   const params = new URL(request.url).searchParams;
   const identifier = params.get("identifier");

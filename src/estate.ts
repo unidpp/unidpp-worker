@@ -224,6 +224,14 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
       RESOLVER_ORIGIN: env?.RESOLVER_ORIGIN,
     });
   }
+  // The discovery document: what the surface serves, stated without
+  // exposing registered identifiers (I12).
+  if (pathname === "/resolver" || pathname === "/resolver/" || pathname === "/resolver/.well-known/unidpp-resolver") {
+    const { discoveryDocument } = await import("./resolver");
+    return json(
+      discoveryDocument(env?.RESOLVER_ORIGIN ?? "https://app.unidpp.org"),
+    );
+  }
   if (pathname.startsWith("/resolver/")) {
     const segments = pathname.slice("/resolver/".length).split("/").filter(Boolean);
     const { resolvePath } = await import("./resolver");
