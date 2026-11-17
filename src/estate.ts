@@ -219,6 +219,45 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
   // renderers the native gateway compiles.
   // The resolution surface (the audit's gap 1 closes on the edge):
   // the passport's resolver_uri promise answers here.
+  if (pathname === "/resolver/normalize") {
+    const { normalizeCarrier } = await import("./resolver");
+    let carrier = "";
+    try {
+      const body = (await request.json()) as { carrier?: unknown };
+      carrier = typeof body.carrier === "string" ? body.carrier : "";
+    } catch {
+      return new Response(JSON.stringify({ error: "invalid JSON body" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (!carrier) {
+      return new Response(JSON.stringify({ error: "`carrier` is required" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    const normalized = normalizeCarrier(carrier);
+    if ("invalid" in normalized) {
+      return new Response(JSON.stringify({ error: normalized.invalid }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return json(normalized);
+  }
+  // The admin surface manages the native resolver's link store; the
+  // edge carries none (it resolves against the issuer register), so
+  // the refusal is stated, never a silent 404.
+  if (pathname.startsWith("/resolver/admin/")) {
+    return new Response(
+      JSON.stringify({
+        error:
+          "the edge resolver carries no link store; link administration lives on the native resolver",
+      }),
+      { status: 501, headers: { "content-type": "application/json" } },
+    );
+  }
   if (pathname === "/resolver/resolve") {
     const { resolveQuery } = await import("./resolver");
     return resolveQuery(request, {

@@ -216,3 +216,54 @@ describe("the documented grammar (the native forms on the edge)", () => {
     expect(mod.parseIdentifier("gs1:(01)08712345000005")).toBeNull();
   });
 });
+
+describe("the normalize surface", () => {
+  const call = async (body: unknown): Promise<{ status: number; json: Record<string, unknown> }> => {
+    const { handle } = await import("../src/estate");
+    const response = await handle(
+      new Request("https://app.unidpp.org/resolver/normalize", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      {},
+    );
+    return { status: response.status, json: (await response.json()) as Record<string, unknown> };
+  };
+
+  it("normalizes the Digital Link form to its canonical identifier", async () => {
+    const out = await call({ carrier: "https://id.example.org/01/08712345000004/10/LOT7" });
+    expect(out.status).toBe(200);
+    expect(out.json.kind).toBe("gs1-digital-link-uri");
+    expect((out.json.identifier as Record<string, string>).key).toBe("01+08712345000004");
+  });
+
+  it("normalizes the canonical element string and the URN", async () => {
+    const element = await call({ carrier: "gs1:(01)08712345000004" });
+    expect(element.status).toBe(200);
+    expect((element.json.identifier as Record<string, string>).key).toBe("01+08712345000004");
+    const urn = await call({ carrier: "urn:unidpp:passport:pack-0001" });
+    expect(urn.status).toBe(200);
+    expect(urn.json.kind).toBe("iso-15459-urn");
+  });
+
+  it("a bad check digit and a missing carrier refuse, stated", async () => {
+    expect((await call({ carrier: "01+08712345000005" })).status).toBe(400);
+    expect((await call({})).status).toBe(400);
+    expect((await call({ carrier: "https://example.org/nothing" })).status).toBe(400);
+  });
+
+  it("the admin surface states its refusal (the edge carries no link store)", async () => {
+    const { handle } = await import("../src/estate");
+    const response = await handle(
+      new Request("https://app.unidpp.org/resolver/admin/revocations", {
+        method: "POST",
+        body: JSON.stringify({}),
+      }),
+      {},
+    );
+    expect(response.status).toBe(501);
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toContain("no link store");
+  });
+});

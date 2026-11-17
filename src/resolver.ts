@@ -236,6 +236,92 @@ export function discoveryDocument(origin: string): Record<string, unknown> {
   };
 }
 
+/** The carrier grammar's kinds: what classifyCarrier answers. */
+export interface NormalizedCarrier {
+  carrier: string;
+  kind: string;
+  origin: string | null;
+  resolverBaseUrl: string | null;
+  identifier: { scheme: string; value: string; granularity: string; key: string };
+}
+
+function gtinValid(gtin14: string): boolean {
+  if (!/^\d{14}$/.test(gtin14)) return false;
+  const check = gtinCheckDigit(gtin14.slice(0, 13));
+  return check !== null && check === Number(gtin14[13]);
+}
+
+/** Translate a carrier to its canonical identifier — the native
+ *  normalize's response shape, over the carrier syntaxes the edge
+ *  grammar accepts (the GS1 Digital Link URL, the element string,
+ *  the ISO/IEC 15459 URN, the bare GTIN). */
+export function normalizeCarrier(carrier: string): NormalizedCarrier | { invalid: string } {
+  const bad = (why: string) => ({ invalid: why });
+  const trimmed = carrier.trim();
+  if (!trimmed) return bad("empty carrier");
+  // A URL: the GS1 Digital Link form (/01/GTIN[/10/L][/21/S]).
+  if (/^https?:\//.test(trimmed)) {
+    let url: URL;
+    try {
+      url = new URL(trimmed);
+    } catch {
+      return bad("unrecognized carrier");
+    }
+    const segments = url.pathname.split("/").filter(Boolean);
+    const map: Record<string, string> = {};
+    for (let i = 0; i + 1 < segments.length; i += 2) map[segments[i]] = segments[i + 1];
+    const gtin = map["01"];
+    if (!gtin || !gtinValid(gtin)) return bad("invalid carrier (check digit / values)");
+    const qualifiers: string[] = [];
+    if (map["10"]) qualifiers.push(`10+${map["10"]}`);
+    if (map["21"]) qualifiers.push(`21+${map["21"]}`);
+    const value = `01+${gtin}${qualifiers.map((q) => `+${q}`).join("")}`;
+    return {
+      carrier: trimmed,
+      kind: "gs1-digital-link-uri",
+      origin: url.origin,
+      resolverBaseUrl: `${url.origin}${url.pathname.split("/01/")[0]}`,
+      identifier: { scheme: "gs1", value, granularity: "item", key: `01+${gtin}` },
+    };
+  }
+  // The canonical element string with its scheme prefix.
+  if (trimmed.startsWith("gs1:")) {
+    const parsed = parseIdentifier(trimmed);
+    if (!parsed || parsed.scheme !== "gtin") return bad("invalid carrier (check digit / values)");
+    return {
+      carrier: trimmed,
+      kind: "gs1-application-identifier-element-string",
+      origin: null,
+      resolverBaseUrl: null,
+      identifier: { scheme: "gs1", value: parsed.key, granularity: "item", key: `01+${parsed.key}` },
+    };
+  }
+  // The ISO/IEC 15459 URN (the passport's own form).
+  const urn = trimmed.startsWith("iso-15459:") ? trimmed.slice("iso-15459:".length) : null;
+  if (urn !== null || trimmed.startsWith("urn:")) {
+    const value = urn ?? trimmed;
+    if (!/^urn:[a-z0-9][a-z0-9-]*:[^\s]+$/i.test(value)) return bad("unrecognized carrier");
+    return {
+      carrier: trimmed,
+      kind: "iso-15459-urn",
+      origin: null,
+      resolverBaseUrl: null,
+      identifier: { scheme: "iso-15459", value, granularity: "item", key: value },
+    };
+  }
+  // The bare GTIN.
+  if (gtinValid(trimmed)) {
+    return {
+      carrier: trimmed,
+      kind: "legacy-ean13",
+      origin: null,
+      resolverBaseUrl: null,
+      identifier: { scheme: "gs1", value: `01+${trimmed}`, granularity: "item", key: `01+${trimmed}` },
+    };
+  }
+  return bad("unrecognized carrier");
+}
+
 export async function resolveQuery(request: Request, env: ResolverEnv): Promise<Response> {
   const params = new URL(request.url).searchParams;
   const identifier = params.get("identifier");
