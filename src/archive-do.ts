@@ -69,7 +69,12 @@ export class ArchiveDO {
 
   constructor(
     stateOrStorage: unknown,
-    private readonly env: { ARCHIVE_BUCKET?: Bucket; LOG?: LogNamespace; UNIDPP_ARCHIVE_SIGN_SEED?: string },
+    private readonly env: {
+      ARCHIVE_BUCKET?: Bucket;
+      LOG?: LogNamespace;
+      UNIDPP_ARCHIVE_SIGN_SEED?: string;
+      UNIDPP_ARCHIVE_ADMIN_TOKEN?: string;
+    },
   ) {
     const source =
       (stateOrStorage as { storage?: unknown }).storage ?? stateOrStorage;
@@ -97,6 +102,19 @@ export class ArchiveDO {
     this.core.unidpp_free(seedPtr, 32);
     this.core.unidpp_free(idPtr, 64);
     return id;
+  }
+
+  // The notary public key (what verifiers pin): the 32 Ed25519
+  // bytes the wasm boundary derives from the seed.
+  private publicKey(seed: Uint8Array): Uint8Array {
+    const seedPtr = this.core.unidpp_alloc(32);
+    new Uint8Array(this.core.memory.buffer, seedPtr, 32).set(seed);
+    const outPtr = this.core.unidpp_alloc(32);
+    this.core.unidpp_head_public(seedPtr, outPtr);
+    const bytes = new Uint8Array(this.core.memory.buffer, outPtr, 32).slice();
+    this.core.unidpp_free(seedPtr, 32);
+    this.core.unidpp_free(outPtr, 32);
+    return bytes;
   }
 
   private seal(seed: Uint8Array, payload: Uint8Array): { key_id: string; suite: string; signature: string } {
@@ -134,6 +152,9 @@ export class ArchiveDO {
     const url = new URL(request.url);
     const path = url.pathname;
     if (path === "/healthz") return stamped(200, { status: "ok" });
+    if (path === "/" && request.method === "GET") return this.discovery();
+    if (path === "/keyring" && request.method === "GET") return this.keyringDocument();
+    if (path === "/admin/log" && request.method === "GET") return this.adminLog(request);
     if (path === "/snapshots" && request.method === "POST") return this.create(request);
     if (path === "/snapshots" && request.method === "GET") {
       return stamped(200, {
@@ -152,7 +173,186 @@ export class ArchiveDO {
     return stamped(404, { error: "no such path" });
   }
 
+  // The bearer guard (the native require_admin): POST /snapshots and
+  // /admin/log refuse without the token, when one is configured.
+  private requireAdmin(request: Request): Response | null {
+    const token = this.env.UNIDPP_ARCHIVE_ADMIN_TOKEN;
+    if (!token) return null;
+    const got = (request.headers.get("authorization") ?? "").replace(/^Bearer\s+/, "");
+    if (got === token) return null;
+    return stamped(401, { error: "unauthorized" });
+  }
+
+  // The discovery document: the service identity, the OAIS mapping,
+  // the notarization recipe, the anchoring semantics, the storage
+  // layout and the entry points (the native module root's own).
+  private discovery(): Response {
+    const anchored = Boolean(this.env.LOG);
+    return stamped(200, {
+      anchoring: {
+        fallback:
+          "an unreachable or refusing log degrades to status=unanchored with the reason recorded; the snapshot remains notarized",
+        how: "POST {UNIDPP_LOG_URL}/commitments with {subject: urn:unidpp:archive:snapshot:<id>, commitment: sha256(core statement bytes)}",
+        journalled:
+          "receipt id, log id, tree size, root, logged_at, and the verbatim receipt ride the snapshot's provenance and the audit journal",
+        when: "UNIDPP_LOG_URL points at a reachable unidpp-log instance",
+      },
+      anchoring_enabled: anchored,
+      as_of: {
+        listing_rule: "a snapshot is listed at instant T when notarized_at <= T",
+        point_in_time_cache:
+          "responses to ?at=... carry cache-control: public, max-age=86400, immutable",
+        query_parameter: "at (alias: asof)",
+        response_header: "x-as-of",
+      },
+      auth: "POST /snapshots and /admin/log require a Bearer token when UNIDPP_ARCHIVE_ADMIN_TOKEN is set",
+      build_id: "dev",
+      description:
+        "UniDPP Tier-C notarized archive: as-of snapshot packs with OAIS-style metadata, Ed25519 notarization, optional transparency-log anchoring, byte-identical re-serving.",
+      endpoints: {
+        admin_log: "GET /admin/log?limit=&offset=",
+        discovery: "GET /",
+        health: "GET /healthz",
+        ingest: "POST /snapshots",
+        keyring: "GET /keyring",
+        listing: "GET /snapshots?passport_id=&at=",
+        snapshot: "GET /snapshots/{id}",
+      },
+      notarization: {
+        adapter_note: ADAPTER_NOTE,
+        domain: "tree-head",
+        keyring_endpoint: "/keyring",
+        statement_recipe: [
+          'core = CanonicalWriter: str("unidpp-archive"), str(snapshot_id), u64(seq), str(oais.information_package.passport_id), hash(state_hash), hash(log_head), i64(as_of.secs)',
+          'if oais.provenance.anchoring.status == "anchored": append u32(1), str(anchoring.log_id), u64(anchoring.receipt_id), u64(anchoring.tree_size), hash(anchoring.root); else append u32(0)',
+          "verify: SignatureSlot{suite: ed25519, key_id: oais.provenance.signing.key_id, signature: hex(oais.provenance.signature)}.verify(SigningDomain::TreeHead, statement, public from /keyring)",
+          "commitment check: sha256(core) == oais.information_package.commitment (and == oais.provenance.receipt.commitment when anchored)",
+        ],
+        suite: "ed25519",
+      },
+      oais: {
+        mapping: {
+          access: "GET /snapshots/{id} — re-serves the AIP byte-identically (access never changes the AIP)",
+          administration: "GET /keyring, GET /admin/log, Bearer-guarded ingest",
+          archival_storage:
+            "the JSONL journal (source of truth) + one AIP file per snapshot under the snapshot directory",
+          data_management: "GET /snapshots?passport_id=&at= — the as-of catalogue",
+          document_sections: {
+            "oais.information_package":
+              "the AIP content: passport state, log head, the as_of instant, the commitment and statement digests",
+            "oais.provenance":
+              "the PDI: notarization (key id, signature), anchoring outcome and the verbatim log receipt",
+            "oais.submission":
+              "the SIP: submitter, submitted_at, and the submitted {passport_id, state_hash, log_head, state_size}",
+          },
+          ingest:
+            "POST /snapshots: validate, timestamp, notarize (sign), optionally anchor into the transparency log",
+          producer:
+            "the issuer submitting {passport_id, state_hash, log_head} (POST /snapshots body = the SIP)",
+        },
+        profile: "ISO 14721 (OAIS) simplified for digital product passports",
+      },
+      schema: "unidpp-archive/snapshot/1",
+      service: "unidpp-archive",
+      storage: {
+        journal:
+          "append-only JSONL (UNIDPP_ARCHIVE_STATE_FILE); replay on start with sequence, digest and torn-tail checks",
+        re_serve:
+          "GET /snapshots/{id} re-renders from the journaled record — byte-identical by construction, pinned by the strong ETag",
+        snapshot_store:
+          "one JSON file per snapshot (UNIDPP_ARCHIVE_SNAPSHOT_DIR); verified against the journal on start, re-materialized when missing, mismatch is a hard error",
+      },
+      version: "0.1.0",
+    });
+  }
+
+  // The notary keyring a verifier pins (the native /keyring: the
+  // mode, the suite, the key id, the public anchor, the verification
+  // recipe and, in seeded-dev mode, the warning).
+  private keyringDocument(): Response {
+    const envSeed = this.env.UNIDPP_ARCHIVE_SIGN_SEED;
+    const envKey = Boolean(envSeed && /^[0-9a-fA-F]{64}$/.test(envSeed.trim()));
+    const seed = this.seed();
+    const body: Record<string, unknown> = {
+      adapter_note: ADAPTER_NOTE,
+      as_of: isoNow(),
+      domain: "tree-head",
+      key_id: this.keyId(seed),
+      mode: envKey ? "env-key" : "seeded-dev",
+      public: hex(this.publicKey(seed)),
+      public_len: 32,
+      role: "notary",
+      suite: "ed25519",
+      verification:
+        "Every snapshot document embeds oais.provenance.signature: Ed25519 over the canonical statement bytes in the tree-head domain. Rebuild the bytes per the discovery document's notarization recipe and verify with unidpp_signatif SignatureSlot::verify against this `public` anchor.",
+    };
+    if (!envKey) {
+      // The dev seed label this keyring derives from, and the mode
+      // warning (the native's seeded-dev posture).
+      body.dev_seed = "UNIDPP-ARCHIVE/NOTARY-SEED";
+      body.warning =
+        "seeded-dev mode is for development only; production deployments must use env-key mode";
+    }
+    return stamped(200, body);
+  }
+
+  // The audit view of the journal (the native /admin/log): the
+  // windowed records, each carrying its body digest.
+  private adminLog(request: Request): Response {
+    const deny = this.requireAdmin(request);
+    if (deny) return deny;
+    const params = new URL(request.url).searchParams;
+    const nonNegative = (raw: string | null): number | null => {
+      if (raw === null) return null;
+      const n = Number(raw);
+      return Number.isInteger(n) && n >= 0 ? n : null;
+    };
+    const limit = Math.min(nonNegative(params.get("limit")) ?? 100, 10_000);
+    const offset = nonNegative(params.get("offset")) ?? 0;
+    const slice = this.index.slice(offset, offset + limit).map((r) => this.auditRecord(r));
+    return stamped(200, {
+      count: slice.length,
+      limit,
+      offset,
+      records: slice,
+      total: this.index.length,
+    });
+  }
+
+  // One journal record's audit form: the snapshot's fields with the
+  // digests of the exact stored body (recomputed — the same bytes
+  // create() wrote).
+  private auditRecord(record: SnapshotRecord): Record<string, unknown> {
+    const statement = canonicalStatement({
+      seq: record.seq,
+      snapshot_id: record.snapshot_id,
+      passport_id: record.passport_id,
+      state_hash: record.state_hash,
+      log_head: record.log_head,
+      submitter: record.submitter,
+      notarized_at: record.notarized_at,
+    });
+    const digest = sha256Hex(this.core, new TextEncoder().encode(aipBody(record, statement)));
+    return {
+      anchoring: record.anchoring,
+      body_digest: digest,
+      body_sha256: digest,
+      key_id: record.signature.key_id,
+      log_head: record.log_head,
+      notarized_at: record.notarized_at,
+      passport_id: record.passport_id,
+      seq: record.seq,
+      signature: record.signature.signature,
+      snapshot_id: record.snapshot_id,
+      state_hash: record.state_hash,
+      state_size: null,
+      submitter: record.submitter,
+    };
+  }
+
   private async create(request: Request): Promise<Response> {
+    const deny = this.requireAdmin(request);
+    if (deny) return deny;
     let v: Record<string, unknown>;
     try {
       v = (await request.json()) as Record<string, unknown>;
@@ -227,12 +427,7 @@ export class ArchiveDO {
     await this.journal.append({ op: "snapshot", record });
     this.index.push(record);
     // The AIP document rides R2.
-    const body = JSON.stringify({
-      schema: "unidpp-archive/aip/v1",
-      service: "unidpp-archive",
-      ...record,
-      statement,
-    });
+    const body = aipBody(record, statement);
     if (this.bucket) {
       await this.bucket.put(`snapshots/${snapshotId}.json`, body);
     }
@@ -261,6 +456,22 @@ const hex = (bytes: Uint8Array): string => {
 const unhex = (value: string): Uint8Array =>
   new Uint8Array((value.match(/../g) ?? []).map((pair) => parseInt(pair, 16)));
 const isoNow = (): string => new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+
+// The notarization's adapter note (the model's own, verbatim): the
+// tree-head slot is the documented adaptation, shared with
+// unidpp-trust.
+const ADAPTER_NOTE =
+  "SIGNATIF has no archival-notarization domain; tree-head (the operator's signed statement of state, used for transparency-log signed tree heads) is the closest documented adaptation — the same adapter note as unidpp-trust. signatif's HistoricalStamp domain ('a notarized historical verification stamp') is the semantically exact slot; adoption is deferred to the 19-signatif-spec-sync divergence register. The signature covers the canonical statement bytes and is embedded in the document so the AIP is self-verifying.";
+
+// The exact stored AIP bytes (create() writes them; the audit view
+// recomputes the digest over the same recipe).
+const aipBody = (record: SnapshotRecord, statement: string): string =>
+  JSON.stringify({
+    schema: "unidpp-archive/aip/v1",
+    service: "unidpp-archive",
+    ...record,
+    statement,
+  });
 
 // The S4 canonical statement: the snapshot's fields in a fixed key
 // order (the byte-exact AIP statement recipe rides the later slices;

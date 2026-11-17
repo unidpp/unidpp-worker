@@ -414,8 +414,14 @@ async function page(pathname: string, request: Request, env: ConsoleEnv): Promis
             }),
           }),
         );
-        const outcome = (await response.json()) as Record<string, unknown>;
-        body += `<pre>${esc(JSON.stringify(outcome, null, 2))}</pre>`;
+        const raw = await response.text();
+        let outcome: unknown;
+        try {
+          outcome = JSON.parse(raw);
+        } catch {
+          outcome = raw;
+        }
+        body += `<pre>${esc(typeof outcome === "string" ? outcome : JSON.stringify(outcome, null, 2))}</pre>`;
         if (response.status !== 200) {
           body = body.replace("<pre>", `<p class="fail">HTTP ${esc(response.status)}</p><pre>`);
         }

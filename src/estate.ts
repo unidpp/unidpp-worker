@@ -140,7 +140,7 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
     : null;
   // The DATA surface rides the Durable Object (REARCH R12 S2); the
   // contract and health answers stay the embedded goldens.
-  const registryData = registryRest?.match(/^\/(items|applicability|admin|models|discovery|cross-register-mappings|class-descriptors|instances)($|\/)/);
+  const registryData = registryRest?.match(/^\/(items|applicability|admin|models|discovery|cross-register-mappings|class-descriptors|instances|services|protocol-bindings|verification-mechanisms|schemas|data-elements|profiles|crypto-suites|transforms|trust-anchors|units)($|\/)/);
   if (registryRest && registryData) {
     if (!env?.REGISTRY) {
       return new Response(
@@ -171,9 +171,13 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
   }
   // The relay is STATELESS: it answers in the estate module itself
   // (REARCH R12 S5 — the hub carries no storage and no journal).
-  if (pathname === "/relay/relay") {
+  if (pathname === "/relay/relay" || pathname === "/relay/relay/verify") {
     const { relay } = await import("./hub");
     return relay(request);
+  }
+  if (pathname === "/relay/keyring") {
+    const { keyring } = await import("./hub");
+    return keyring(request);
   }
   const identityRest = pathname.startsWith("/identity/")
     ? pathname.slice("/identity".length)
@@ -206,7 +210,7 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
   }
   // The views surface (REARCH R12 S5-serve): the lens view computed
   // through the wasm boundary, the sources the estate's own DOs.
-  if (pathname === "/views/view") {
+  if (pathname === "/views/view" || pathname === "/views/render") {
     const { view } = await import("./views");
     return view(request, {
       ISSUER: env?.ISSUER,
@@ -290,7 +294,7 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
     });
   }
   const renderRest = pathname.startsWith("/render/") ? pathname.slice("/render".length) : null;
-  if (renderRest && /^\/(en18222|untp)\//.test(renderRest)) {
+  if (renderRest && /^\/(en18222|untp|feedback|scan-tokens|admin)($|\/)/.test(renderRest)) {
     const { render } = await import("./render");
     return render(renderRest, request, { ISSUER: env?.ISSUER, tenant: tenant ?? undefined });
   }
@@ -315,7 +319,7 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
     });
   }
   const issuerRest = pathname.startsWith("/issuer/") ? pathname.slice("/issuer".length) : null;
-  const issuerData = issuerRest?.match(/^\/(passports|admin|events)($|\/)/);
+  const issuerData = issuerRest?.match(/^\/(passports|admin|events|keyring)($|\/)/);
   if (issuerRest && issuerData) {
     if (!env?.ISSUER) {
       return new Response(
@@ -329,7 +333,7 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
     return stub!.fetch(new Request(inner.toString(), request));
   }
   const archiveRest = pathname.startsWith("/archive/") ? pathname.slice("/archive".length) : null;
-  const archiveData = archiveRest?.match(/^\/(snapshots|admin)($|\/)/);
+  const archiveData = archiveRest?.match(/^\/(snapshots|admin|keyring)($|\/)/);
   if (archiveRest && archiveData) {
     if (!env?.ARCHIVE) {
       return new Response(
@@ -343,7 +347,7 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
     return stub!.fetch(new Request(inner.toString(), request));
   }
   const trustRest = pathname.startsWith("/trust/") ? pathname.slice("/trust".length) : null;
-  const trustData = trustRest?.match(/^\/(keyring|verify|graph|anchors)($|\/)/);
+  const trustData = trustRest?.match(/^\/(keyring|verify|graph|anchors|admin|anchor-bundle|edges|evidence|master-list|nodes|operators|revocations|trust-lists)($|\/)/);
   if (trustRest && trustData) {
     if (!env?.TRUST) {
       return new Response(
@@ -404,6 +408,12 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
           if (rest === "openapi.yaml") return yaml(golden);
           break;
         }
+        // The module root: the contract keys the bare prefix (the
+        // golden's `/`, the discovery document), the form the router
+        // serves.
+        if (pathname === `/${name}`) {
+          return serveModuleRoot(name, request, env, tenant, namespace);
+        }
       }
       return new Response(JSON.stringify({ error: "no such path" }), {
         status: 404,
@@ -411,5 +421,49 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
       });
     }
   }
+}
+
+// The module root (the discovery document each module serves at its
+// bare prefix): the DO-backed modules forward into their Durable
+// Object, the stateless modules answer from their own module.
+async function serveModuleRoot(
+  name: string,
+  request: Request,
+  env?: Env,
+  tenant: string | null = null,
+  namespace?: (ns: DoNamespace | undefined, name: string) => ReturnType<DoNamespace["get"]> | null,
+): Promise<Response> {
+  const upper = (s: string) => s.toUpperCase();
+  const fields = ["registry", "trust", "log", "issuer", "archive"] as const;
+  const doField = fields.find((f) => f === name);
+  if (doField) {
+    const ns = env?.[upper(name) as "REGISTRY" | "TRUST" | "LOG" | "ISSUER" | "ARCHIVE"];
+    if (!ns || !namespace) {
+      return new Response(
+        JSON.stringify({ error: `the ${name} Durable Object is not bound` }),
+        { status: 503, headers: { "content-type": "application/json" } },
+      );
+    }
+    const stub = namespace(ns, "estate");
+    const inner = new URL(request.url);
+    inner.pathname = "/";
+    return stub!.fetch(new Request(inner.toString(), request));
+  }
+  if (name === "views") {
+    const { discovery } = await import("./views");
+    return discovery(request, { tenant: tenant ?? undefined });
+  }
+  if (name === "render") {
+    const { discovery } = await import("./render");
+    return discovery(request, { tenant: tenant ?? undefined });
+  }
+  if (name === "relay") {
+    const { discovery } = await import("./hub");
+    return discovery(request);
+  }
+  return new Response(JSON.stringify({ error: "no such path" }), {
+    status: 404,
+    headers: { "content-type": "application/json" },
+  });
 }
 

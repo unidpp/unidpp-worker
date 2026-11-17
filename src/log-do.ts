@@ -120,11 +120,15 @@ export class LogDO {
     const url = new URL(request.url);
     const path = url.pathname;
     if (path === "/healthz") return json(200, { status: "ok" });
+    if (path === "/") return this.discovery();
     if (path === "/commitments" && request.method === "POST") {
       return this.commit(request);
     }
-    const receipt = path.match(/^\/receipt\/(\d+)$/);
+    const receipt = path.match(/^\/receipt\/([^/]+)$/);
     if (receipt && request.method === "GET") {
+      if (!/^\d+$/.test(receipt[1])) {
+        return badRequest("`seq` must be an unsigned integer");
+      }
       return this.receipt(Number(receipt[1]), url);
     }
     if (path === "/tree/head" && request.method === "GET") return this.head();
@@ -140,6 +144,70 @@ export class LogDO {
       this.records.push(record);
       this.loadTree().append(unhex(record.commitment));
     }
+  }
+
+  // The discovery document: the log identity, the operator public side
+  // (derived from the seed through the wasm boundary — the same key
+  // the tree heads sign under), the endpoint index and the
+  // receipt-verification steps. The native serves it at the bare
+  // prefix; no as-of stamp (the log states invariants, not a reading).
+  private discovery(): Response {
+    const logId = this.env.UNIDPP_LOG_ID ?? "unidpp-log";
+    const seed = operatorSeed(this.core, this.env.UNIDPP_LOG_SEED);
+    const seedPtr = this.core.unidpp_alloc(32);
+    new Uint8Array(this.core.memory.buffer, seedPtr, 32).set(seed);
+    const publicPtr = this.core.unidpp_alloc(32);
+    this.core.unidpp_head_public(seedPtr, publicPtr);
+    const publicHex = hex(new Uint8Array(this.core.memory.buffer, publicPtr, 32).slice());
+    const keyIdLen = this.core.unidpp_head_key_id(seedPtr, publicPtr);
+    const keyId = new TextDecoder().decode(
+      new Uint8Array(this.core.memory.buffer, publicPtr, keyIdLen).slice(),
+    );
+    this.core.unidpp_free(seedPtr, 32);
+    this.core.unidpp_free(publicPtr, 32);
+    return json(200, {
+      build_id: "dev",
+      description:
+        "UniDPP transparency-log anchor: sequenced Merkle commitments with signed inclusion receipts and monotonic signed tree heads",
+      endpoints: {
+        commit: "POST /commitments",
+        consistency: "GET /tree/consistency?from=",
+        health: "GET /healthz",
+        receipt: "GET /receipt/{seq}",
+        tree_head: "GET /tree/head",
+      },
+      invariants: {
+        enumeration:
+          "none (I12): no endpoint lists subjects or commitments; the log is verifiable without being browsable",
+        heads:
+          "a head is signed at append time over tree_size + root + timestamp; heads never move backwards",
+        sequencing:
+          "sequence numbers are strictly monotonic (0, 1, 2, ...); the journal replays with the same discipline",
+      },
+      log_id: logId,
+      operator: {
+        fingerprint: `ed25519:${coreDigestOf(this.core, publicHex)}`,
+        key_id: keyId,
+        log_id: logId,
+        public_key_hex: publicHex,
+        suite: "ed25519",
+      },
+      quorum: {
+        deployment:
+          "Durable Objects (sequencing) + R2 segments on Cloudflare is the documented succession path",
+        later:
+          "M-of-K log-of-logs per the UniDPP operator model 6; unidpp-signatif already implements the master quorum verification",
+        now: "M=1 of K=1 — one honest operator (see README)",
+      },
+      receipt_verification: [
+        "1. verify tree_head.signature against the operator public key (this document)",
+        "2. verify the inclusion proof reconstructs tree_head.root from the anchored commitment",
+        "3. as the tree grows, GET /tree/consistency?from=<receipt tree_size> and verify it ties the receipt's pinned root to the current head",
+      ],
+      service: "unidpp-log",
+      tree: "RFC 6962 Merkle tree over sequenced commitment leaves (Confium transparency-log constants 0x01/0x02, via unidpp-signatif)",
+      version: "0.1.0",
+    });
   }
 
   private async commit(request: Request): Promise<Response> {
