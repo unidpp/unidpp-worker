@@ -16,6 +16,7 @@ import archiveGolden from "../goldens/unidpp-archive.yaml";
 import hubGolden from "../goldens/unidpp-hub.yaml";
 import consoleGolden from "../goldens/unidpp-console.yaml";
 import identityGolden from "../goldens/identity.yaml";
+import resolverGolden from "../goldens/unidpp-resolver.yaml";
 import { CoreExports, digestHex } from "./wasm";
 
 export const VERSION = "0.1.0";
@@ -33,6 +34,7 @@ export const MODULES: ReadonlyArray<readonly [string, string, string]> = [
   ["relay", "unidpp-hub", hubGolden],
   ["console", "unidpp-console", consoleGolden],
   ["identity", "unidpp-server", identityGolden],
+  ["resolver", "unidpp-resolver", resolverGolden],
 ];
 
 export function discoveryDocument(): Record<string, unknown> {
@@ -223,6 +225,14 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
       ISSUER: env?.ISSUER,
       RESOLVER_ORIGIN: env?.RESOLVER_ORIGIN,
     });
+  }
+  // The contract and the health probe: the module loop's answers,
+  // stated here because the resolver's own routes run first.
+  if (pathname === "/resolver/healthz") {
+    return json({ status: "ok" });
+  }
+  if (pathname === "/resolver/openapi.yaml") {
+    return yaml(resolverGolden);
   }
   // The discovery document: what the surface serves, stated without
   // exposing registered identifiers (I12).
