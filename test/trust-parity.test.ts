@@ -1015,12 +1015,48 @@ describe("the trust Durable Object's parity surface", () => {
   it("keeps the keyring and receipt verification working unchanged", async () => {
     const trust = make(new FakeStorage());
     const keyring = (await (await get(trust, "/keyring")).json()) as {
-      keyring: string;
-      anchors: { key_id: string; public: string; suite: string }[];
+      mode: string;
+      domain: string;
+      roles: Record<string, { key_id: string; public: string; public_len: number; suite: string }>;
     };
-    expect(keyring.keyring).toBe("unidpp-trust");
-    expect(keyring.anchors).toHaveLength(1);
-    expect(keyring.anchors[0].suite).toBe("ed25519");
+    expect(keyring.mode).toBe("seeded-dev");
+    expect(keyring.domain).toBe("tree-head");
+    expect(keyring.roles["sign-ed25519"].public_len).toBe(32);
+    expect(keyring.roles["sign-ecdsa-p256"].public_len).toBe(65);
+    expect(keyring.roles["sign-ed25519"].key_id).toMatch(/^k-[0-9a-f]{16}$/);
+    // The response signature verifies over the exact body bytes in
+    // the tree-head domain, under the served signing key.
+    const response = await get(trust, "/trust-lists");
+    const body = await response.text();
+    const sig = response.headers.get("x-sig-ed25519");
+    const keyId = response.headers.get("x-sig-key-id-ed25519");
+    expect(sig).toMatch(/^[0-9a-f]{128}$/);
+    expect(keyId).toBe(keyring.roles["sign-ed25519"].key_id);
+    expect(response.headers.get("x-sig-domain")).toBe("tree-head");
+    expect(response.headers.get("etag")).toBe(`"sig-${sig?.slice(0, 32)}"`);
+    // The stranger's check, in-process: the served signature verifies
+    // under the served public over the exact body bytes.
+    const { createPublicKey, verify } = await import("node:crypto");
+    const spki = Buffer.concat([
+      Buffer.from("302a300506032b6570032100", "hex"),
+      Buffer.from(keyring.roles["sign-ed25519"].public, "hex"),
+    ]);
+    // The signature covers the framed bytes: the domain tag, a zero
+    // separator, then the body — what the native slot sign/verify pair
+    // frames on both sides.
+    const framed = Buffer.concat([
+      Buffer.from("UNIDPP-SIGNATIF/TREE-HEAD"),
+      Buffer.from([0]),
+      Buffer.from(body, "utf8"),
+    ]);
+    expect(
+      verify(
+        null,
+        framed,
+        createPublicKey({ key: spki, format: "der", type: "spki" }),
+        Buffer.from(sig ?? "", "hex"),
+      ),
+    ).toBe(true);
     const missing = await post(trust, "/verify", {});
     expect(missing.status).toBe(400);
     expect(await errorOf(missing)).toBe("`tree_head` is required");
@@ -1031,7 +1067,7 @@ describe("the trust Durable Object's parity surface", () => {
           tree_size: 1,
           timestamp: "2026-01-01T00:00:00Z",
           root: "aa".repeat(32),
-          signature: { suite: "ed25519", key_id: keyring.anchors[0].key_id, signature: "bb".repeat(64) },
+          signature: { suite: "ed25519", key_id: keyring.roles["sign-ed25519"].key_id, signature: "bb".repeat(64) },
         },
       })
     ).json()) as { verified: boolean; log_id: string };

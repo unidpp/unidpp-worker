@@ -924,7 +924,109 @@ export class TrustDO {
     return this.anchor;
   }
 
+  // The response-signing keys: the native keyring's dev derivation —
+  // the material labels per suite, the dev seed from the deployment
+  // env or the fixed default.
+  private signKeys: Record<string, Anchor> | null = null;
+
+  private signSeed(): string {
+    return this.env.UNIDPP_TRUST_DEV_SEED?.trim() || "unidpp-trust/dev-1";
+  }
+
+  private signKeyOf(suite: string): Anchor {
+    if (!this.signKeys) {
+      this.signKeys = {};
+      for (const suite of ["ed25519", "ecdsa-p256"]) {
+        const material = new TextEncoder().encode(`unidpp-trust/sign-${suite}|${this.signSeed()}`);
+        const materialPtr = this.core.unidpp_alloc(material.length);
+        new Uint8Array(this.core.memory.buffer, materialPtr, material.length).set(material);
+        const suiteBytes = new TextEncoder().encode(suite);
+        const suitePtr = this.core.unidpp_alloc(suiteBytes.length);
+        new Uint8Array(this.core.memory.buffer, suitePtr, suiteBytes.length).set(suiteBytes);
+        const rc = this.core.unidpp_key_identity(
+          materialPtr,
+          material.length,
+          suitePtr,
+          suiteBytes.length,
+        );
+        this.core.unidpp_free(materialPtr, material.length);
+        this.core.unidpp_free(suitePtr, suiteBytes.length);
+        const notePtr = this.core.unidpp_alloc(4096);
+        const noteLen = this.core.unidpp_note_take(notePtr);
+        const note = new TextDecoder().decode(
+          new Uint8Array(this.core.memory.buffer, notePtr, Math.max(0, noteLen)).slice(),
+        );
+        this.core.unidpp_free(notePtr, 4096);
+        if (rc !== 0) throw new Error(`the ${suite} signing key derivation failed`);
+        this.signKeys[suite] = JSON.parse(note) as Anchor;
+      }
+    }
+    return this.signKeys[suite];
+  }
+
+  private signWith(suite: string, domain: string, payload: Uint8Array): string {
+    const material = new TextEncoder().encode(`unidpp-trust/sign-${suite}|${this.signSeed()}`);
+    const materialPtr = this.core.unidpp_alloc(material.length);
+    new Uint8Array(this.core.memory.buffer, materialPtr, material.length).set(material);
+    const suiteBytes = new TextEncoder().encode(suite);
+    const suitePtr = this.core.unidpp_alloc(suiteBytes.length);
+    new Uint8Array(this.core.memory.buffer, suitePtr, suiteBytes.length).set(suiteBytes);
+    const domainBytes = new TextEncoder().encode(domain);
+    const domainPtr = this.core.unidpp_alloc(domainBytes.length);
+    new Uint8Array(this.core.memory.buffer, domainPtr, domainBytes.length).set(domainBytes);
+    const payloadPtr = this.core.unidpp_alloc(payload.length);
+    new Uint8Array(this.core.memory.buffer, payloadPtr, payload.length).set(payload);
+    const sigPtr = this.core.unidpp_alloc(160);
+    const len = this.core.unidpp_sign_suite(
+      materialPtr,
+      material.length,
+      suitePtr,
+      suiteBytes.length,
+      domainPtr,
+      domainBytes.length,
+      payloadPtr,
+      payload.length,
+      sigPtr,
+      160,
+    );
+    [materialPtr, suitePtr, domainPtr, payloadPtr].forEach((ptr, i) =>
+      this.core.unidpp_free(
+        ptr,
+        [material.length, suiteBytes.length, domainBytes.length, payload.length][i],
+      ),
+    );
+    if (len < 0) throw new Error(`the ${suite} signing failed (${len})`);
+    return hex(new Uint8Array(this.core.memory.buffer, sigPtr, len).slice());
+  }
+
+  private async signResponse(response: Response): Promise<Response> {
+    if (response.headers.get("content-type") !== "application/json") {
+      return response;
+    }
+    const body = await response.text();
+    const bodyBytes = new TextEncoder().encode(body);
+    const ed = this.signKeyOf("ed25519");
+    const p256 = this.signKeyOf("ecdsa-p256");
+    const edSig = this.signWith("ed25519", "tree-head", bodyBytes);
+    const p256Sig = this.signWith("ecdsa-p256", "tree-head", bodyBytes);
+    const headers = new Headers(response.headers);
+    headers.set("x-sig-domain", "tree-head");
+    headers.set("x-sig-ed25519", edSig);
+    headers.set("x-sig-key-id-ed25519", ed.key_id);
+    headers.set("x-sig-ecdsa-p256", p256Sig);
+    headers.set("x-sig-key-id-ecdsa-p256", p256.key_id);
+    headers.set("etag", `"sig-${edSig.slice(0, 32)}"`);
+    return new Response(body, { status: response.status, headers });
+  }
+
+  // Every JSON response is co-signed in the tree-head domain — the
+  // native signing posture the discovery document states — so the
+  // fetch wraps the router and signs what it answers.
   async fetch(request: Request): Promise<Response> {
+    return this.signResponse(await this.handle(request));
+  }
+
+  private async handle(request: Request): Promise<Response> {
     if (!this.loaded) {
       // Replay: every journal entry is an audit record whose shape is
       // the public wire shape — the state rebuilds through apply and
@@ -1071,14 +1173,44 @@ export class TrustDO {
   }
 
   private keyring(): Response {
-    const anchor = this.anchorOf();
-    return new Response(
-      JSON.stringify({
-        keyring: "unidpp-trust",
-        anchors: [anchor],
-        as_of: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
-      }),
-      { headers: { "content-type": "application/json", "x-as-of": new Date().toISOString() } },
+    // The native keyring document: the two signing roles with their
+    // ids and publics, the header table, the verification statement.
+    const ed = this.signKeyOf("ed25519");
+    const p256 = this.signKeyOf("ecdsa-p256");
+    const wire = (key: Anchor): Record<string, unknown> => ({
+      key_id: key.key_id,
+      public: key.public,
+      public_len: key.suite === "ed25519" ? 32 : 65,
+      suite: key.suite,
+    });
+    return jsonBody(
+      200,
+      {
+        as_of: isoNow(),
+        dev_seed: this.signSeed(),
+        domain: "tree-head",
+        headers: {
+          as_of: "x-as-of",
+          cache_control: "cache-control",
+          domain: "x-sig-domain",
+          ecdsa_p256_key: "x-sig-key-id-ecdsa-p256",
+          ecdsa_p256_sig: "x-sig-ecdsa-p256",
+          ed25519_key: "x-sig-key-id-ed25519",
+          ed25519_sig: "x-sig-ed25519",
+          etag: "etag",
+        },
+        mode: "seeded-dev",
+        roles: {
+          "sign-ecdsa-p256": wire(p256),
+          "sign-ed25519": wire(ed),
+        },
+        verification:
+          "GET responses carry x-sig-ed25519 and x-sig-ecdsa-p256 over the exact body bytes in the tree-head domain. Verify by SignatureSlot::verify(SigningDomain::TreeHead, body_bytes, public_key); pin either role via CLI --anchor.",
+        warning:
+          "seeded-dev mode is for development only; production deployments must use env-key mode",
+      },
+      isoNow(),
+      CACHE_NO_STORE,
     );
   }
 

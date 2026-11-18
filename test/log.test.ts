@@ -149,9 +149,9 @@ describe("the log Durable Object", () => {
     const trust = new TrustDO(storage(), {});
     const keyring = (await (
       await trust.fetch(new Request("https://do.internal/keyring"))
-    ).json()) as { anchors: { key_id: string; public: string; suite: string }[] };
-    expect(keyring.anchors.length).toBe(1);
-    expect(keyring.anchors[0].suite).toBe("ed25519");
+    ).json()) as { roles: Record<string, { key_id: string; suite: string }> };
+    expect(keyring.roles["sign-ed25519"].suite).toBe("ed25519");
+    expect(keyring.roles["sign-ecdsa-p256"].suite).toBe("ecdsa-p256");
     const verdict = (await (
       await trust.fetch(
         new Request("https://do.internal/verify", {

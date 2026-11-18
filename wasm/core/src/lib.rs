@@ -1721,9 +1721,10 @@ pub unsafe extern "C" fn unidpp_key_identity(
         String::from_utf8_lossy(std::slice::from_raw_parts(suite_ptr, suite_len)).into_owned();
     let suite = match suite_text.as_str() {
         "ed25519" => Suite::Ed25519,
+        "ecdsa-p256" => Suite::EcdsaP256,
         _ => return -1,
     };
-    let key = match operator_key(seed) {
+    let key = match KeyPair::seeded(suite, seed) {
         Ok(key) => key,
         Err(_) => return -1,
     };
@@ -1738,6 +1739,62 @@ pub unsafe extern "C" fn unidpp_key_identity(
         );
     }
     0
+}
+
+/// Sign `payload` in `domain` with the suite's key pair derived from
+/// the seed material (any length — the native keyring's label
+/// convention); writes the signature to `sig_out` and returns its
+/// byte length, negative on a shape error.
+///
+/// # Safety
+/// All pointers name readable memory of the stated lengths; `sig_out`
+/// names `sig_cap` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn unidpp_sign_suite(
+    seed_ptr: *const u8,
+    seed_len: usize,
+    suite_ptr: *const u8,
+    suite_len: usize,
+    domain_ptr: *const u8,
+    domain_len: usize,
+    payload_ptr: *const u8,
+    payload_len: usize,
+    sig_out: *mut u8,
+    sig_cap: usize,
+) -> i32 {
+    let seed = std::slice::from_raw_parts(seed_ptr, seed_len);
+    let suite_text =
+        String::from_utf8_lossy(std::slice::from_raw_parts(suite_ptr, suite_len)).into_owned();
+    let domain_bytes = std::slice::from_raw_parts(domain_ptr, domain_len);
+    let payload = std::slice::from_raw_parts(payload_ptr, payload_len);
+    let suite = match suite_text.as_str() {
+        "ed25519" => Suite::Ed25519,
+        "ecdsa-p256" => Suite::EcdsaP256,
+        _ => return -2,
+    };
+    let key = match KeyPair::seeded(suite, seed) {
+        Ok(key) => key,
+        Err(_) => return -1,
+    };
+    let domain = match std::str::from_utf8(domain_bytes) {
+        Ok(text) => match domain_token(text) {
+            Some(domain) => domain,
+            None => return -2,
+        },
+        Err(_) => return -2,
+    };
+    let slot = match SignatureSlot::sign(&key, domain, payload) {
+        Ok(slot) => slot,
+        Err(_) => return -3,
+    };
+    let Some(signature) = slot.signature.as_deref() else {
+        return -4;
+    };
+    if signature.len() > sig_cap {
+        return -5;
+    }
+    std::ptr::copy_nonoverlapping(signature.as_ptr(), sig_out, signature.len());
+    signature.len() as i32
 }
 
 /// Canonicalize a verification route (SI-11): the steps ride as JSON

@@ -58,6 +58,18 @@ export interface CoreExports {
     suite: number,
     suiteLen: number,
   ) => number;
+  unidpp_sign_suite: (
+    seed: number,
+    seedLen: number,
+    suite: number,
+    suiteLen: number,
+    domain: number,
+    domainLen: number,
+    payload: number,
+    payloadLen: number,
+    sigOut: number,
+    sigCap: number,
+  ) => number;
   unidpp_log_verdict: (
     log: number,
     logLen: number,
