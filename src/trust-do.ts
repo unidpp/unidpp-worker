@@ -361,6 +361,77 @@ const slotParse = (v: unknown): { slot: StoredSlot } | { error: string } => {
   return { slot: { suite, key_id: keyId, signature } };
 };
 
+// The signatif canonical-fields framing (Annex B): every field
+// u32-LE length-prefixed, little-endian — the bytes the witness and
+// quorum signatures cover.
+const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
+const u64le = (value: number | bigint): Uint8Array => {
+  const out = new Uint8Array(8);
+  new DataView(out.buffer).setBigUint64(0, BigInt(value), true);
+  return out;
+};
+const u32le = (value: number): Uint8Array => {
+  const out = new Uint8Array(4);
+  new DataView(out.buffer).setUint32(0, value, true);
+  return out;
+};
+const canonicalFields = (fields: Uint8Array[]): Uint8Array => {
+  const parts = fields.map((f) => {
+    const head = u32le(f.length);
+    const out = new Uint8Array(head.length + f.length);
+    out.set(head);
+    out.set(f, head.length);
+    return out;
+  });
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
+};
+
+// The canonical bytes a master-list witness signature covers: (node,
+// at.secs, at.nanos — the seconds i64-LE, the nanos u32-LE), per
+// signatif's WitnessAttestation.
+const witnessPayload = (node: string, secs: number, nanos: number): Uint8Array =>
+  canonicalFields([utf8(node), u64le(secs), u32le(nanos)]);
+
+// The canonical statement a revocation's quorum covers: (subject
+// label, reason token, declared_by, window start, window end or
+// i64::MAX), and the quorum payload wraps it with (quorum node,
+// threshold).
+interface StatementContext {
+  label: string;
+  reasonToken: string;
+  declaredBy: string;
+  windowStart: number;
+  windowEnd: number | null;
+}
+const I64_MAX = 9223372036854775807n;
+const revocationStatement = (ctx: StatementContext): Uint8Array =>
+  canonicalFields([
+    utf8(ctx.label),
+    utf8(ctx.reasonToken),
+    utf8(ctx.declaredBy),
+    u64le(ctx.windowStart),
+    u64le(ctx.windowEnd === null ? I64_MAX : ctx.windowEnd),
+  ]);
+const quorumPayload = (
+  q: NonNullable<StoredRevocation["quorum"]>,
+  ctx: StatementContext,
+): Uint8Array => {
+  const statement = revocationStatement(ctx);
+  const head = canonicalFields([utf8(q.quorum)]);
+  const out = new Uint8Array(head.length + 4 + statement.length);
+  out.set(head);
+  out.set(u32le(q.threshold), head.length);
+  out.set(statement, head.length + 4);
+  return out;
+};
+
 // The node kind rides the wire form (a token string or the
 // threshold_group object); the members carry BTreeSet semantics
 // (sorted, deduplicated).
@@ -619,7 +690,7 @@ const subjectParse = (v: unknown): { subject: Record<string, unknown>; label: st
       if (condition === undefined) {
         return { error: "`condition` (the scope-condition object) is required" };
       }
-      const display = `${nodeId}:\`${JSON.stringify(condition)}\``;
+      const display = `${nodeId}:\`${JSON.stringify(sorted(condition))}\``;
       return {
         subject: {
           kind: "condition",
@@ -1355,10 +1426,9 @@ export class TrustDO {
     const at = parseAt(url);
     if ("error" in at) return errorResponse(400, at.error);
     // The live per-attestation verification runs in the
-    // MasterListWitness signing domain; the wasm boundary's verify
-    // export carries no master-list-witness token, so the verdicts
-    // render as not-verified (never faked) and the quorum count
-    // follows.
+    // MasterListWitness signing domain over the attestation's
+    // canonical bytes against the registered witness key — the same
+    // verification the native store renders.
     const asOf = this.asOfOf(at.at);
     return jsonBody(
       200,
@@ -1366,22 +1436,143 @@ export class TrustDO {
         as_of: asOf,
         m_of_k: { m: this.masterM, k: this.witnesses.size },
         witnesses: this.sortedWitnesses().map(witnessWire),
-        entries: this.sortedEntries().map((entry) => ({
-          node: entry.node,
-          attestations: entry.attestations.map((a) => ({
-            witness: a.witness,
-            at: a.at,
-            slot: a.slot,
-            verified: false,
-          })),
-          verified_witnesses: 0,
-          quorate: false,
-          threshold_required: this.masterM,
-        })),
+        entries: this.sortedEntries().map((entry) => {
+          const verified = entry.attestations.map((a) =>
+            this.attestationVerified(entry.node, a),
+          );
+          const distinct = new Set<string>();
+          entry.attestations.forEach((a, i) => {
+            if (verified[i]) distinct.add(a.witness);
+          });
+          return {
+            node: entry.node,
+            attestations: entry.attestations.map((a, i) => ({
+              witness: a.witness,
+              at: a.at,
+              slot: a.slot,
+              verified: verified[i],
+            })),
+            verified_witnesses: distinct.size,
+            quorate: distinct.size >= this.masterM,
+            threshold_required: this.masterM,
+          };
+        }),
       },
       asOf,
       this.cacheOf(at.at),
     );
+  }
+
+  // Live verification through the boundary: the signature slot
+  // verifies in the named signing domain over the payload bytes
+  // against the registered public key.
+  private verifySlot(
+    domain: string,
+    suite: string,
+    publicHex: string,
+    payload: Uint8Array,
+    slot: StoredSlot,
+  ): boolean {
+    if (!slot.signature) return false;
+    const core = this.core;
+    const put = (bytes: Uint8Array): { ptr: number; len: number } => {
+      const ptr = core.unidpp_alloc(bytes.length);
+      new Uint8Array(core.memory.buffer, ptr, bytes.length).set(bytes);
+      return { ptr, len: bytes.length };
+    };
+    const domainB = put(utf8(domain));
+    const suiteB = put(utf8(suite));
+    const publicB = put(unhex(publicHex));
+    const payloadB = put(payload);
+    const sigB = put(unhex(slot.signature));
+    const rc = core.unidpp_verify_raw(
+      domainB.ptr,
+      domainB.len,
+      suiteB.ptr,
+      suiteB.len,
+      publicB.ptr,
+      publicB.len,
+      payloadB.ptr,
+      payloadB.len,
+      sigB.ptr,
+      sigB.len,
+    );
+    [domainB, suiteB, publicB, payloadB, sigB].forEach((p) =>
+      core.unidpp_free(p.ptr, p.len),
+    );
+    return rc === 1;
+  }
+
+  private attestationVerified(node: string, att: StoredAttestation): boolean {
+    const witness = this.witnesses.get(att.witness);
+    if (!witness) return false;
+    const ms = Date.parse(att.at);
+    if (Number.isNaN(ms)) return false;
+    const payload = witnessPayload(
+      node,
+      Math.floor(ms / 1000),
+      (ms % 1000) * 1_000_000,
+    );
+    return this.verifySlot(
+      "master-list-witness",
+      witness.suite,
+      witness.public,
+      payload,
+      att.slot,
+    );
+  }
+
+  // The two-form quorum verdict: a slot verifying under the quorum
+  // node's own registered key certifies the group form; otherwise the
+  // distinct verifying member keys resolvable through the directory
+  // count toward the threshold.
+  private quorumVerdictOf(
+    q: NonNullable<StoredRevocation["quorum"]>,
+    ctx: StatementContext,
+  ): Record<string, unknown> {
+    const quorumNode = this.nodes.get(q.quorum);
+    const quorumKeyIds = new Set((quorumNode?.keys ?? []).map((k) => k.key_id));
+    const byKeyId = new Map<string, { suite: string; public: string }>();
+    for (const node of this.nodes.values()) {
+      for (const k of node.keys) byKeyId.set(k.key_id, { suite: k.suite, public: k.public });
+    }
+    for (const w of this.witnesses.values()) {
+      byKeyId.set(w.key_id, { suite: w.suite, public: w.public });
+    }
+    const payload = quorumPayload(q, ctx);
+    let groupVerified = false;
+    if (quorumNode) {
+      for (const slot of q.signatures) {
+        const key = quorumNode.keys.find((k) => k.key_id === slot.key_id);
+        if (key && this.verifySlot("quorum", key.suite, key.public, payload, slot)) {
+          groupVerified = true;
+          break;
+        }
+      }
+    }
+    const members = new Set<string>();
+    for (const slot of q.signatures) {
+      if (quorumKeyIds.has(slot.key_id)) continue;
+      const key = byKeyId.get(slot.key_id);
+      if (key && this.verifySlot("quorum", key.suite, key.public, payload, slot)) {
+        members.add(slot.key_id);
+      }
+    }
+    const group = quorumNode?.kind as
+      | { threshold_group?: { threshold?: number } }
+      | string
+      | undefined;
+    const nodeThreshold =
+      group && typeof group === "object"
+        ? (group.threshold_group?.threshold ?? null)
+        : null;
+    const groupCertifies = groupVerified && nodeThreshold === q.threshold;
+    return {
+      form: groupCertifies ? "threshold-group" : "member-keys",
+      verified_count: members.size,
+      group_verified: groupVerified,
+      quorate: groupCertifies || members.size >= q.threshold,
+    };
   }
 
   private revocationsRead(url: URL): Response {
@@ -1460,15 +1651,21 @@ export class TrustDO {
         window: r.window,
         quorum: r.quorum
           ? {
-              // The Quorum signing domain is not verifiable at the
-              // wasm boundary: the verdict renders what this service
-              // can attest — no verified member, not quorate.
+              // The live quorum verdict: the Quorum signing domain
+              // over the attestation's canonical payload, the group
+              // form (a slot under the quorum node's own registered
+              // key) or the member form (distinct verifying keys
+              // resolvable through the directory) — the same
+              // two-form verdict the native renders.
               quorum: r.quorum.quorum,
               threshold: r.quorum.threshold,
-              form: "member-keys",
-              verified_count: 0,
-              group_verified: false,
-              quorate: false,
+              ...this.quorumVerdictOf(r.quorum, {
+                label: r.label,
+                reasonToken: String((r.reason as { token: string }).token),
+                declaredBy: r.declared_by,
+                windowStart: r.window_start,
+                windowEnd: r.window_end,
+              }),
               signatures: r.quorum.signatures,
             }
           : null,
@@ -2026,16 +2223,33 @@ export class TrustDO {
     }
     // Retroactive distrust is authority-over-authority: without a
     // quorum attestation the declaration refuses on the merits (422),
-    // the native text verbatim. With one present, the native verifies
-    // the Quorum-domain slots against the graph before recording; the
-    // wasm boundary carries no quorum token, so the attestation rides
-    // unverified (never faked) and the reads render the honest
-    // verdict.
+    // and with one present the Quorum-domain slots verify against the
+    // graph before recording — the native's intake verification, the
+    // refusal texts verbatim.
     if (reason.retroactive && quorum === null) {
       return errorResponse(
         422,
         `retroactive distrust of \`${subject.label}\` requires a quorum attestation`,
       );
+    }
+    if (reason.retroactive && quorum !== null) {
+      const verdict = this.quorumVerdictOf(quorum, {
+        label: subject.label,
+        reasonToken: String(reason.reason.token),
+        declaredBy: declaredBy,
+        windowStart: window.start,
+        windowEnd: window.end,
+      });
+      if (!verdict.quorate) {
+        const summary =
+          verdict.form === "threshold-group"
+            ? `threshold-group signature verified (${quorum.threshold} of the group's members acted), threshold ${quorum.threshold}`
+            : `${verdict.verified_count} member key(s) verified, threshold ${quorum.threshold}`;
+        return errorResponse(
+          422,
+          `quorum attestation for \`${subject.label}\` does not reach the threshold (${summary})`,
+        );
+      }
     }
     const revocation: StoredRevocation = {
       subject: subject.subject,

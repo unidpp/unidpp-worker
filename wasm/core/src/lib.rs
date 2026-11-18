@@ -237,6 +237,8 @@ fn domain_token(text: &str) -> Option<SigningDomain> {
         "hub-relay" => Some(SigningDomain::HubRelay),
         "segment-policy" => Some(SigningDomain::SegmentPolicy),
         "spine-root" => Some(SigningDomain::SpineRoot),
+        "master-list-witness" => Some(SigningDomain::MasterListWitness),
+        "quorum" => Some(SigningDomain::Quorum),
         _ => None,
     }
 }

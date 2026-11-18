@@ -58,6 +58,90 @@ const post = (trust: TrustDO, path: string, body: unknown, headers?: Record<stri
 const errorOf = async (response: Response): Promise<string> =>
   ((await response.json()) as { error: string }).error;
 
+// The boundary's seeded signing: the operator key derived from a
+// 32-byte material signs in the named domain, head_public reads the
+// matching public, and the key id rides the signatif derivation —
+// the same discipline the keyring carries.
+const unhexT = (value: string): Uint8Array =>
+  new Uint8Array((value.match(/../g) ?? []).map((b) => parseInt(b, 16)));
+const hexT = (bytes: Uint8Array): string =>
+  [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+const put = (bytes: Uint8Array): { ptr: number; len: number } => {
+  const ptr = core.unidpp_alloc(bytes.length);
+  new Uint8Array(core.memory.buffer, ptr, bytes.length).set(bytes);
+  return { ptr, len: bytes.length };
+};
+const publicOfSeed = (seedHex: string): string => {
+  const material = put(unhexT(seedHex));
+  const out = core.unidpp_alloc(32);
+  core.unidpp_head_public(material.ptr, out);
+  const hex = hexT(new Uint8Array(core.memory.buffer, out, 32).slice());
+  core.unidpp_free(material.ptr, 32);
+  core.unidpp_free(out, 32);
+  return hex;
+};
+const signDomain = (
+  seedHex: string,
+  domain: string,
+  payload: Uint8Array,
+): string => {
+  const material = put(unhexT(seedHex));
+  const domainB = put(new TextEncoder().encode(domain));
+  const payloadB = put(payload);
+  const out = core.unidpp_alloc(64);
+  const rc = core.unidpp_sign_raw(material.ptr, domainB.ptr, domainB.len, payloadB.ptr, payloadB.len, out);
+  const sig = hexT(new Uint8Array(core.memory.buffer, out, 64).slice());
+  [material, domainB, payloadB].forEach((p) => core.unidpp_free(p.ptr, p.len));
+  core.unidpp_free(out, 64);
+  if (rc !== 0) throw new Error(`the boundary refused to sign: ${rc}`);
+  return sig;
+};
+const keyIdOfPublic = (publicHex: string): string => {
+  const bytes = unhexT(publicHex);
+  const data = new Uint8Array(bytes.length + 1);
+  data[0] = 6; // the ed25519 suite code
+  data.set(bytes, 1);
+  const input = put(data);
+  const out = core.unidpp_alloc(32);
+  core.unidpp_sha256(input.ptr, data.length, out);
+  const digest = hexT(new Uint8Array(core.memory.buffer, out, 32).slice());
+  core.unidpp_free(input.ptr, data.length);
+  core.unidpp_free(out, 32);
+  return `k-${digest.slice(0, 16)}`;
+};
+// The signatif canonical-fields framing: every field u32-LE
+// length-prefixed, little-endian — the bytes the quorum signatures
+// cover.
+const u32le = (value: number): Uint8Array => {
+  const out = new Uint8Array(4);
+  new DataView(out.buffer).setUint32(0, value, true);
+  return out;
+};
+const u64le = (value: number): Uint8Array => {
+  const out = new Uint8Array(8);
+  new DataView(out.buffer).setBigUint64(0, BigInt(value), true);
+  return out;
+};
+const fieldOf = (text: string): Uint8Array => new TextEncoder().encode(text);
+const canonicalOf = (fields: Uint8Array[]): Uint8Array => {
+  const parts = fields.map((f) => {
+    const head = u32le(f.length);
+    const out = new Uint8Array(head.length + f.length);
+    out.set(head);
+    out.set(f, head.length);
+    return out;
+  });
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
+};
+const secsOf = (text: string): number => Math.floor(Date.parse(text) / 1000);
+
 // The live server's seeded witness keys (unidpp-signatif's
 // deterministic scenario seeds): the DO must derive the identical
 // key ids the native serves at /master-list.
@@ -496,6 +580,57 @@ describe("the trust Durable Object's parity surface", () => {
     );
   });
 
+  it("verifies master-list attestations live and counts the quorum verdict", async () => {
+    const trust = make(new FakeStorage());
+    const seed = "cc".repeat(32);
+    const pub = publicOfSeed(seed);
+    const keyId = keyIdOfPublic(pub);
+    const set = await post(trust, "/master-list/witnesses", {
+      m: 1,
+      witnesses: [{ node: "witness-t", suite: "ed25519", key_id: keyId, public: pub, public_len: 32 }],
+    });
+    expect(set.status).toBe(201);
+    // The attestation signs the canonical bytes (node, at.secs,
+    // at.nanos) in the MasterListWitness domain.
+    const payload = canonicalOf([
+      fieldOf("issuer-t"),
+      u64le(secsOf("2026-01-01T00:00:00Z")),
+      u32le(0),
+    ]);
+    const sig = signDomain(seed, "master-list-witness", payload);
+    const entry = await post(trust, "/master-list/entries", {
+      node: "issuer-t",
+      attestations: [
+        { witness: "witness-t", at: "2026-01-01T00:00:00Z", slot: { suite: "ed25519", key_id: keyId, signature: sig } },
+      ],
+    });
+    expect(entry.status).toBe(201);
+    const read = async () =>
+      (await (await get(trust, "/master-list")).json()) as {
+        entries: {
+          node: string;
+          attestations: { verified: boolean }[];
+          verified_witnesses: number;
+          quorate: boolean;
+        }[];
+      };
+    const good = (await read()).entries.find((e) => e.node === "issuer-t");
+    expect(good?.attestations[0]?.verified).toBe(true);
+    expect(good?.verified_witnesses).toBe(1);
+    expect(good?.quorate).toBe(true);
+    // A tampered signature renders unverified, never faked.
+    const bad = sig.endsWith("00") ? `${sig.slice(0, -2)}01` : `${sig.slice(0, -2)}00`;
+    await post(trust, "/master-list/entries", {
+      node: "issuer-u",
+      attestations: [
+        { witness: "witness-t", at: "2026-01-01T00:00:00Z", slot: { suite: "ed25519", key_id: keyId, signature: bad } },
+      ],
+    });
+    const tampered = (await read()).entries.find((e) => e.node === "issuer-u");
+    expect(tampered?.attestations[0]?.verified).toBe(false);
+    expect(tampered?.quorate).toBe(false);
+  });
+
   it("declares revocations and reads the live retroactivity", async () => {
     const trust = make(new FakeStorage());
     await post(trust, "/nodes", { id: "eu-root", kind: "root" });
@@ -523,9 +658,67 @@ describe("the trust Durable Object's parity surface", () => {
     const declared = (await prospective.json()) as Record<string, unknown>;
     expect(declared.window).toEqual({ start: "2026-02-15T00:00:00Z", end: null, open: true });
     expect(declared.audit_seq).toBe(2);
-    // The retroactive declaration rides with a quorum attestation (the
-    // Quorum domain is not verifiable at the boundary — recorded, and
-    // the reads render the honest verdict).
+    // The retroactive declaration rides with a quorate attestation:
+    // two member keys registered on the graph, each signing the
+    // canonical quorum payload in the Quorum domain — the intake
+    // verifies before recording, exactly as the native does.
+    const memberSeed1 = "aa".repeat(32);
+    const memberSeed2 = "bb".repeat(32);
+    const memberPublic1 = publicOfSeed(memberSeed1);
+    const memberPublic2 = publicOfSeed(memberSeed2);
+    await post(trust, "/nodes", {
+      id: "quorum-1",
+      kind: "end",
+      keys: [
+        { key_id: keyIdOfPublic(memberPublic1), suite: "ed25519", public: memberPublic1, public_len: 32 },
+      ],
+    });
+    await post(trust, "/nodes", {
+      id: "quorum-2",
+      kind: "end",
+      keys: [
+        { key_id: keyIdOfPublic(memberPublic2), suite: "ed25519", public: memberPublic2, public_len: 32 },
+      ],
+    });
+    const statement = canonicalOf([
+      fieldOf("key:k-issuer"),
+      fieldOf("misissuance"),
+      fieldOf("eu-root"),
+      u64le(secsOf("2026-01-01T00:00:00Z")),
+      u64le(secsOf("2026-02-01T00:00:00Z")),
+    ]);
+    const quorumPayload = canonicalOf([fieldOf("eu-super-quorum")]);
+    const payload = new Uint8Array(quorumPayload.length + 4 + statement.length);
+    payload.set(quorumPayload);
+    payload.set(u32le(2), quorumPayload.length);
+    payload.set(statement, quorumPayload.length + 4);
+    const signatureOf = (seed: string) => signDomain(seed, "quorum", payload);
+    // The merits refusal when the attestation does not reach the
+    // threshold: one member slot verifies, the threshold is two.
+    expect(
+      await errorOf(
+        await post(trust, "/revocations", {
+          subject: { kind: "key", id: "k-issuer" },
+          reason: { token: "misissuance" },
+          declared_at: "2026-03-01T12:00:00Z",
+          declared_by: "eu-root",
+          window: { start: "2026-01-01T00:00:00Z", end: "2026-02-01T00:00:00Z" },
+          quorum: {
+            quorum: "eu-super-quorum",
+            threshold: 2,
+            signatures: [
+              {
+                suite: "ed25519",
+                key_id: keyIdOfPublic(memberPublic1),
+                signature: signatureOf(memberSeed1),
+              },
+            ],
+          },
+        }),
+      ),
+    ).toBe(
+      "quorum attestation for `key:k-issuer` does not reach the threshold (1 member key(s) verified, threshold 2)",
+    );
     const retroactive = await post(trust, "/revocations", {
       subject: { kind: "key", id: "k-issuer" },
       reason: { token: "misissuance" },
@@ -535,7 +728,18 @@ describe("the trust Durable Object's parity surface", () => {
       quorum: {
         quorum: "eu-super-quorum",
         threshold: 2,
-        signatures: [{ suite: "ed25519", key_id: "k-quorum-1", signature: SIG64 }],
+        signatures: [
+          {
+            suite: "ed25519",
+            key_id: keyIdOfPublic(memberPublic1),
+            signature: signatureOf(memberSeed1),
+          },
+          {
+            suite: "ed25519",
+            key_id: keyIdOfPublic(memberPublic2),
+            signature: signatureOf(memberSeed2),
+          },
+        ],
       },
     });
     expect(retroactive.status).toBe(201);
@@ -561,9 +765,9 @@ describe("the trust Durable Object's parity surface", () => {
       quorum: "eu-super-quorum",
       threshold: 2,
       form: "member-keys",
-      verified_count: 0,
+      verified_count: 2,
       group_verified: false,
-      quorate: false,
+      quorate: true,
     });
     expect(compromise.reason.token).toBe("key-compromise");
     expect(compromise.quorum).toBeNull();
