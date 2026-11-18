@@ -2,11 +2,14 @@
 
 UniDPP on Cloudflare Workers (REARCH R12): the union surface of the
 one deployment, native to the edge — no containers, no foreign
-origin. The ten module goldens and the union contract are embedded
-verbatim and served byte-identically behind their prefixes; the
-estate's core crates (model, event, verdict) compile into this
-Worker as libraries, so the algorithms — and the golden vectors that
-pin them — are the same bytes the native binaries carry.
+origin. The eleven module goldens and the union contract are
+embedded verbatim and served byte-identically behind their
+prefixes, and every operation the served contract documents answers
+from its module (the estate's Durable Objects and modules mirror
+the native handlers' response shapes, refusal texts and status
+codes). The estate's core rides as the wasm module the vector
+corpus pins, so the algorithms — and the golden vectors that pin
+them — are the same bytes the native binaries carry.
 
 ## Run
 
