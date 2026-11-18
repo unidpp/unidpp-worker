@@ -1242,7 +1242,7 @@ export class TrustDO {
           source:
             "unidpp-signatif tests/common topology + scenario_misissuance (T0-anchored; see README)",
           enabled_by_default: false,
-          disable_via: "UNIDPP_TRUST_NO_SEED_FIXTURES=1",
+          note: "the edge seeds no fixture topology; the native trust service seeds it on first start (its default, disabled there with UNIDPP_TRUST_NO_SEED_FIXTURES=1)",
         },
         auth: "mutations and /admin/log require a Bearer token when UNIDPP_TRUST_ADMIN_TOKEN is set",
       },
