@@ -1489,6 +1489,210 @@ pub unsafe extern "C" fn unidpp_event_body(ptr: *const u8, len: usize) -> i32 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The verdict-leg boundary: the native issuer's two verdict legs run
+// here — the log verdict through the verdict crate's builder and the
+// Tier-A carrier leg through mint-then-verify — so the edge's graded
+// verdicts carry the native shapes and the native verification, not a
+// mirror of them.
+// ---------------------------------------------------------------------------
+
+/// The log verdict leg: `VerdictBuilder` over the passport's log at
+/// the query instant, answering current-state, third-party attested
+/// when signatures exist, anchored at the log head. The verdict rides
+/// the out buffer as JSON.
+///
+/// # Safety
+/// `log_ptr` names `log_len` readable JSON; `out` names `out_cap`
+/// writable bytes; `out_len` names one writable u32.
+#[no_mangle]
+pub unsafe extern "C" fn unidpp_log_verdict(
+    log_ptr: *const u8,
+    log_len: usize,
+    now_secs: i64,
+    with_signatures: i32,
+    out_len: *mut u32,
+    out: *mut u8,
+    out_cap: usize,
+) -> i32 {
+    use unidpp_event::EventLog;
+    use unidpp_verdict::{Reading, VerdictBuilder};
+    let text = String::from_utf8_lossy(std::slice::from_raw_parts(log_ptr, log_len)).into_owned();
+    let outcome = (|| -> Result<serde_json::Value, String> {
+        let log: EventLog = serde_json::from_str(&text)
+            .map_err(|e| format!("the log does not parse: {e}"))?;
+        let now = ModelTimestamp::from_secs(now_secs);
+        let mut builder = VerdictBuilder::new(&log, now)
+            .answering(Reading::CurrentState)
+            .attested_by_third_party(with_signatures != 0);
+        if let Some(head) = log.head() {
+            builder = builder.with_anchor(head);
+        }
+        serde_json::to_value(builder.build()).map_err(|e| e.to_string())
+    })();
+    match outcome {
+        Ok(value) => match serde_json::to_string(&value) {
+            Ok(ser) => {
+                let bytes = ser.as_bytes();
+                if bytes.len() > out_cap {
+                    return -2;
+                }
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len());
+                unsafe {
+                    out_len.write(bytes.len() as u32);
+                }
+                0
+            }
+            Err(_) => -2,
+        },
+        Err(message) => {
+            unsafe {
+                DEBUG_TEXT = Some(message);
+            }
+            -1
+        }
+    }
+}
+
+/// The Tier-A verdict leg: mint the carrier over the passport's log
+/// (the pipeline /pack rides), verify it under the seeded pack
+/// anchors, and render the graded outcome — the native issuer's leg
+/// verbatim, verification included. The leg rides the out buffer as
+/// JSON; the pack budget failure renders as the native 413-class
+/// error (rc -1, the message in the note).
+///
+/// # Safety
+/// All pointers name readable memory of the stated lengths; `out`
+/// names `out_cap` writable bytes; `out_len` names one writable u32.
+#[no_mangle]
+pub unsafe extern "C" fn unidpp_tier_a_leg(
+    document_ptr: *const u8,
+    document_len: usize,
+    seed_ptr: *const u8,
+    seed_len: usize,
+    suites_ptr: *const u8,
+    suites_len: usize,
+    now_secs: i64,
+    max_age: i64,
+    out_len: *mut u32,
+    out: *mut u8,
+    out_cap: usize,
+) -> i32 {
+    use unidpp_cli::commands::verify::verify_pack_with_anchors;
+    use unidpp_cli::packfile::{sign_pack_suites, DEFAULT_BUDGET};
+    use unidpp_cli::passport::Passport;
+    use unidpp_signatif::Suite;
+    use unidpp_tier_a::{TierAPacker, TierAPayload};
+    let read = |ptr: *const u8, len: usize| -> String {
+        String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned()
+    };
+    let document_text = read(document_ptr, document_len);
+    let seed_bytes = std::slice::from_raw_parts(seed_ptr, seed_len);
+    let suites_text = read(suites_ptr, suites_len);
+    let outcome = (|| -> Result<serde_json::Value, String> {
+        let passport = Passport::from_json(&document_text)
+            .map_err(|e| format!("not a passport document: {e}"))?;
+        let suites: Vec<Suite> = if suites_text.is_empty() {
+            vec![Suite::EcdsaP256]
+        } else {
+            suites_text
+                .split(',')
+                .map(|t| match t.trim() {
+                    "ecdsa-p256" => Some(Suite::EcdsaP256),
+                    "sm2" => Some(Suite::Sm2),
+                    "ml-dsa-44" => Some(Suite::MlDsa44),
+                    "ml-dsa-65" => Some(Suite::MlDsa65),
+                    "ml-dsa-87" => Some(Suite::MlDsa87),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| {
+                    "unknown suite token (expected ecdsa-p256 | sm2 | ml-dsa-*)".to_string()
+                })?
+        };
+        let payload = TierAPayload::from_log(
+            &passport.log,
+            passport.product_id.clone(),
+            &passport.resolver_uri,
+            &passport.eo_id,
+            passport.validity,
+            Vec::new(),
+        );
+        let (signed, minted) = sign_pack_suites(&payload, seed_bytes, &suites)
+            .map_err(|e| format!("pack signing: {e}"))?;
+        let packer = TierAPacker::new(DEFAULT_BUDGET.0, DEFAULT_BUDGET.1);
+        let packed = packer.pack(&signed).map_err(|e| e.to_string())?;
+        let anchors: Vec<unidpp_signatif::keyring::PublicKey> =
+            minted.iter().map(|(public, _)| *public).collect();
+        let now = ModelTimestamp::from_secs(now_secs);
+        let outcome = verify_pack_with_anchors(packed.as_slice(), &anchors, now, max_age);
+        let summary = outcome.payload.as_ref().map(|p| {
+            serde_json::json!({
+                "status": p.status,
+                "safety": p.safety,
+                "as_of": p.as_of,
+                "log_head": p.log_head.map(|h| h.hex()),
+                "signatures": p.signatures.len(),
+            })
+        });
+        Ok(serde_json::json!({
+            "grade": outcome.grade.token(),
+            "exit_code": outcome.grade.exit_code(),
+            "reading_answered": outcome.reading_answered,
+            "findings": outcome.findings,
+            "readings": outcome.readings,
+            "coverage": outcome.coverage,
+            "freshness": outcome.freshness.map(|f| f.label()),
+            "trust_marker": outcome.trust_marker.map(|t| t.as_str()),
+            "carrier": {
+                "bytes": packed.used,
+                "projected": packed.projected,
+                "qr_version": packed.version,
+            },
+            "payload": summary,
+            "signature": {
+                "suite": suites.first().copied().unwrap_or(Suite::EcdsaP256).to_string(),
+                "key_id": minted
+                    .first()
+                    .map(|(_, k)| k.to_string())
+                    .unwrap_or_default(),
+            },
+            "signatures": minted
+                .iter()
+                .map(|(public, key_id)| {
+                    serde_json::json!({
+                        "suite": public.suite().to_string(),
+                        "key_id": key_id.to_string(),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        }))
+    })();
+    match outcome {
+        Ok(value) => match serde_json::to_string(&value) {
+            Ok(text) => {
+                let bytes = text.as_bytes();
+                if bytes.len() > out_cap {
+                    return -2;
+                }
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len());
+                unsafe {
+                    out_len.write(bytes.len() as u32);
+                }
+                0
+            }
+            Err(_) => -2,
+        },
+        Err(message) => {
+            unsafe {
+                DEBUG_TEXT = Some(message);
+            }
+            -1
+        }
+    }
+}
+
+
 fn hex_lower(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for b in bytes {

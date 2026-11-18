@@ -87,5 +87,40 @@ describe("the native cross-check", () => {
     const nativeSig = nativeDoc.event_signatures[nativeDoc.event_signatures.length - 1];
     const edgeSig = edgeDoc.event_signatures[edgeDoc.event_signatures.length - 1];
     expect(JSON.stringify(edgeSig)).toBe(JSON.stringify(nativeSig));
+
+    // The verdicts: the stable projections agree — the legs are the
+    // native legs, not a mirror of them (the instants differ per
+    // instance; the graded content does not).
+    const verdictOf = async (base: string, id: string) =>
+      ((await (await fetch(`${base}/issuer/passports/${encodeURIComponent(id)}/verdict`)).json()) as Record<string, unknown>);
+    const [nativeVerdict, edgeVerdict] = await Promise.all([
+      verdictOf("http://127.0.0.1:8091", nativeId),
+      (async () => {
+        const response = await serve(`/passports/${encodeURIComponent(edgeId)}/verdict`);
+        expect(response.status).toBe(200);
+        return (await response.json()) as Record<string, unknown>;
+      })(),
+    ]);
+    const stable = (v: Record<string, unknown>) => {
+      const log = v.log as Record<string, unknown>;
+      const crypto = log.cryptographic as Record<string, unknown>;
+      const state = log.current_state as Record<string, unknown>;
+      const tierA = v.tier_a as Record<string, unknown>;
+      const findings = tierA.findings as { check: string; grade: string }[];
+      return JSON.stringify({
+        outcome: log.outcome,
+        trust_marker: log.trust_marker,
+        chain_verified: crypto.chain_verified,
+        anchor_ok: crypto.anchor_ok,
+        status: state.status,
+        safety: state.safety,
+        grade: tierA.grade,
+        exit_code: tierA.exit_code,
+        findings: findings.map((f) => [f.check, f.grade]),
+        tier_trust_marker: tierA.trust_marker,
+        coverage: tierA.coverage,
+      });
+    };
+    expect(stable(edgeVerdict)).toBe(stable(nativeVerdict));
   });
 });

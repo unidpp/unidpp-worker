@@ -146,7 +146,9 @@ describe("the verdict route", () => {
     expect(tierA.grade).toBe("degraded");
     expect(tierA.exit_code).toBe(1);
     expect(tierA.reading_answered).toBe("current-state");
-    expect(tierA.freshness).toBe("fresh");
+    // The native pipeline: the mint instant is the as-of, aged past
+    // the window by the time the verdict runs.
+    expect(tierA.freshness).toBe("stale");
     expect(tierA.trust_marker).toBe("attested");
     const findings = tierA.findings as { check: string; grade: string; detail: string }[];
     expect(findings[0]).toEqual({
@@ -218,13 +220,24 @@ describe("the verdict route", () => {
     const evidentiary = log.evidentiary as Record<string, unknown>;
     expect(evidentiary.events_total).toBe(1);
     expect(evidentiary.as_of).toBeTruthy();
-    // A fresh log with no anchor degrades to the offline case.
-    expect(log.outcome).toEqual({ Degraded: "OfflineNoAnchor" });
+    // The log leg anchors at the sealed head: the chain verifies, the
+    // anchor check passes, the trust marker climbs to log-anchored,
+    // and the outcome is a pass at the current-state reading.
+    expect(log.outcome).toBe("Pass");
     expect(log.freshness).toEqual({ Fresh: { as_of: "2026-01-01T00:00:00Z" } });
+    const crypto = log.cryptographic as { chain_verified: boolean; anchor_ok: boolean | null; head: string | null };
+    expect(crypto.chain_verified).toBe(true);
+    expect(crypto.anchor_ok).toBe(true);
+    expect(crypto.head).toMatch(/^[0-9a-f]{64}$/);
+    expect(log.trust_marker).toBe("log-anchored");
     const tierA = doc.tier_a as Record<string, unknown>;
     const payload = tierA.payload as Record<string, unknown>;
     expect(payload.status).toBe("suspended");
+    expect(payload.log_head).toBe(crypto.head);
     const findings = tierA.findings as { check: string; grade: string; detail: string }[];
+    const logHead = findings.find((f) => f.check === "evidence/log-head");
+    expect(logHead?.grade).toBe("Pass");
+    expect(logHead?.detail).toContain((crypto.head ?? "").slice(0, 16));
     const status = findings.find((f) => f.check === "status");
     expect(status?.grade).toBe("Degraded");
     expect(status?.detail).toBe("suspended: circulation paused pending resolution");

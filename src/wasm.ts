@@ -58,6 +58,28 @@ export interface CoreExports {
     suite: number,
     suiteLen: number,
   ) => number;
+  unidpp_log_verdict: (
+    log: number,
+    logLen: number,
+    nowSecs: bigint,
+    withSignatures: number,
+    outLen: number,
+    out: number,
+    outCap: number,
+  ) => number;
+  unidpp_tier_a_leg: (
+    document: number,
+    documentLen: number,
+    seed: number,
+    seedLen: number,
+    suites: number,
+    suitesLen: number,
+    nowSecs: bigint,
+    maxAge: bigint,
+    outLen: number,
+    out: number,
+    outCap: number,
+  ) => number;
   unidpp_debug_note: () => number;
   unidpp_debug_parse_identity: (id: number, idLen: number) => number;
   unidpp_view_project: (

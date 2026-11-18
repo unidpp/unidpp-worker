@@ -619,7 +619,7 @@ export class IssuerDO {
     const now = at.at ?? new Date();
     const nowMs = now.getTime();
 
-    const log = logVerdictLeg(record, nowMs);
+    const log = logVerdictLeg(this.core, record, nowMs);
     const eventAudit = eventSignatureAudit(this.core, record, this.env);
     const leg = tierAVerdictLeg(this.core, record, this.env, nowMs, maxAge);
     if ("response" in leg) return leg.response;
@@ -1214,69 +1214,73 @@ function replayEvents(
   };
 }
 
-// The log verdict leg (the verdict crate's builder over the passport's
-// own event log, answering the current-state reading).
+// The boundary call helper for the verdict-leg exports: JSON in, the
+// native leg JSON out (the out buffer doubles as the error note).
+function legCall(
+  core: CoreExports,
+  run: (lenPtr: number, out: number) => number,
+): { ok: true; out: Record<string, unknown> } | { ok: false; error: string } {
+  const lenPtr = core.unidpp_alloc(4);
+  const out = core.unidpp_alloc(1048576);
+  const rc = run(lenPtr, out);
+  const len = Number(new DataView(core.memory.buffer, lenPtr).getUint32(0, true));
+  let text = "";
+  if (rc !== 0) {
+    const notePtr = core.unidpp_alloc(1048576);
+    const noteLen = core.unidpp_note_take(notePtr);
+    text = new TextDecoder().decode(
+      new Uint8Array(core.memory.buffer, notePtr, Math.max(0, noteLen)).slice(),
+    );
+    core.unidpp_free(notePtr, 1048576);
+    core.unidpp_free(lenPtr, 4);
+    core.unidpp_free(out, 1048576);
+    return { ok: false, error: text || `the leg failed (${rc})` };
+  }
+  text = new TextDecoder().decode(new Uint8Array(core.memory.buffer, out, len).slice());
+  core.unidpp_free(lenPtr, 4);
+  core.unidpp_free(out, 1048576);
+  return { ok: true, out: JSON.parse(text) as Record<string, unknown> };
+}
+
+// The log verdict leg: the verdict crate's builder through the
+// boundary — the native shapes and the native chain logic, not a
+// mirror of them.
 function logVerdictLeg(
+  core: CoreExports,
   record: PassportRecord,
   nowMs: number,
 ): Record<string, unknown> {
-  // The sealed log is the authoritative record; the legacy journal
-  // form kept bare event objects under `events`.
-  const sealedLog = (record.document.log as { sealed?: unknown[] } | undefined)?.sealed;
-  const events =
-    sealedLog ??
-    (record.document.events as unknown[] | undefined) ??
-    [];
-  const eventSignatures =
+  const signatures =
     (record.document.event_signatures as unknown[] | undefined) ?? [];
-  const replay = replayEvents(events, nowMs);
-  const trustMarker = trustMarkerOf(0, 0, eventSignatures.length > 0, false);
-  // Static freshness (no profile): an event instant serves, its
-  // absence degrades explicitly.
-  const freshness: Record<string, unknown> | string = replay.last_event_at
-    ? { Fresh: { as_of: replay.last_event_at } }
-    : "Indeterminate";
-  // The degradation ladder: no anchor is configured on the DO, so a
-  // fresh log still degrades to the offline anchor case.
-  const outcome: Record<string, unknown> = !replay.last_event_at
-    ? { Degraded: "NoFreshnessEvidence" }
-    : { Degraded: "OfflineNoAnchor" };
-  return {
-    cryptographic: {
-      chain_verified: true,
-      head: null,
-      anchor_ok: null,
-      signatures: [],
-      trust_marker: trustMarker,
-    },
-    current_state: {
-      active_links: 0,
-      custodian: replay.custodian,
-      safety: replay.safety,
-      status: replay.status,
-      taints: { entries: [] },
-      voids_ab_initio: false,
-    },
-    evidentiary: {
-      as_of: replay.events_total > 0 ? new Date(nowMs).toISOString() : null,
-      chain_verified: true,
-      corrections: replay.corrections,
-      coverage: { present: [], required: [] },
-      events_total: replay.events_total,
-      recalls: replay.recalls,
-      security_flags: replay.security_flags,
-      stamps: replay.stamps,
-    },
-    freshness,
-    outcome,
-    reading_answered: "current-state",
-    trust_marker: trustMarker,
+  const logText = JSON.stringify(
+    record.document.log ?? { subject: record.document.passport_id, sealed: [] },
+  );
+  const put = (text: string): { ptr: number; len: number } => {
+    const bytes = new TextEncoder().encode(text);
+    const ptr = core.unidpp_alloc(bytes.length);
+    new Uint8Array(core.memory.buffer, ptr, bytes.length).set(bytes);
+    return { ptr, len: bytes.length };
   };
+  const log = put(logText);
+  const outcome = legCall(core, (lenPtr, out) =>
+    core.unidpp_log_verdict(
+      log.ptr,
+      log.len,
+      BigInt(Math.floor(nowMs / 1000)),
+      signatures.length > 0 ? 1 : 0,
+      lenPtr,
+      out,
+      1048576,
+    ),
+  );
+  core.unidpp_free(log.ptr, log.len);
+  if (!outcome.ok) throw new Error(`the log verdict failed: ${outcome.error}`);
+  return outcome.out;
 }
 
-// The Tier-A carrier leg: mint and state the pack exactly as /pack
-// mints it, then grade the payload facts the DO holds — the native's
-// find/verify pipeline mirrored over the boundary's own carrier.
+// The Tier-A carrier leg: mint over the passport's sealed log, verify
+// under the seeded pack anchors, render the graded outcome — the
+// native pipeline through the boundary.
 function tierAVerdictLeg(
   core: CoreExports,
   record: PassportRecord,
@@ -1284,179 +1288,33 @@ function tierAVerdictLeg(
   nowMs: number,
   maxAge: number,
 ): { leg: Record<string, unknown> } | { response: Response } {
-  const minted = mintPackDocument(
-    core,
-    record.document,
-    packSeed(core, env.UNIDPP_ISSUER_SIGN_SEED),
-    "",
+  const documentText = JSON.stringify(record.document);
+  const put = (bytes: Uint8Array): { ptr: number; len: number } => {
+    const ptr = core.unidpp_alloc(bytes.length);
+    new Uint8Array(core.memory.buffer, ptr, bytes.length).set(bytes);
+    return { ptr, len: bytes.length };
+  };
+  const document = put(new TextEncoder().encode(documentText));
+  const seed = packSeed(core, (env as { UNIDPP_ISSUER_SIGN_SEED?: string }).UNIDPP_ISSUER_SIGN_SEED);
+  const seedB = put(seed);
+  const suites = put(new TextEncoder().encode(""));
+  const outcome = legCall(core, (lenPtr, out) =>
+    core.unidpp_tier_a_leg(
+      document.ptr,
+      document.len,
+      seedB.ptr,
+      seedB.len,
+      suites.ptr,
+      suites.len,
+      BigInt(Math.floor(nowMs / 1000)),
+      BigInt(Math.ceil(maxAge)),
+      lenPtr,
+      out,
+      1048576,
+    ),
   );
-  if (!minted.ok) return { response: badRequest(`pack signing: ${minted.error}`) };
-  const pack = minted.pack as {
-    bytes: number;
-    projected: number;
-    qr_version: number;
-    signature: { suite: string; key_id: string } | null;
-    signatures: { suite: string; key_id: string }[];
-  };
-  const slots = pack.signatures ?? [];
-
-  const findings: { check: string; grade: Grade; detail: string }[] = [];
-  findings.push({
-    check: "schema/decode",
-    grade: 0,
-    detail: `canonical Tier-A framing intact (${slots.length} signature ${slots.length === 1 ? "slot" : "slots"})`,
-  });
-  slots.forEach((slot, index) => {
-    findings.push({
-      check: `signature/${slot.suite}/slot-${index + 1}`,
-      grade: 0,
-      detail: `signature verified (${slot.suite}, ${slot.key_id}) against the anchor`,
-    });
-  });
-
-  // The sealed log is the authoritative record; the legacy journal
-  // form kept bare event objects under `events`.
-  const sealedLog = (record.document.log as { sealed?: unknown[] } | undefined)?.sealed;
-  const events =
-    sealedLog ??
-    (record.document.events as unknown[] | undefined) ??
-    [];
-  const replay = replayEvents(events, nowMs);
-  const asOfMs = replay.last_event_at
-    ? Date.parse(replay.last_event_at)
-    : nowMs;
-  const asOf = new Date(asOfMs).toISOString();
-  const age = Math.max(0, Math.floor((nowMs - asOfMs) / 1000));
-  const fresh = maxAge <= 0 || age <= maxAge;
-  const freshnessGrade: Grade = fresh ? 0 : 1;
-  const freshnessLabel = fresh ? "fresh" : "stale";
-  findings.push({
-    check: "freshness",
-    grade: freshnessGrade,
-    detail: fresh
-      ? `fresh: as-of stamp is ${age}s old (window ${maxAge}s)`
-      : `stale: as-of stamp is ${age}s old, window ${maxAge}s`,
-  });
-
-  // The evidence legs in pipeline order: the log-head commitment
-  // (absent on the DO's log), then the validity window.
-  findings.push({
-    check: "evidence/log-head",
-    grade: 1,
-    detail:
-      "no log-head commitment: the pack cannot anchor the passport's event log",
-  });
-
-  const validity = (record.document.validity ?? {}) as {
-    from?: string;
-    to?: string | null;
-  };
-  const fromMs = validity.from ? Date.parse(validity.from) : Number.NaN;
-  const toMs = validity.to ? Date.parse(validity.to) : Number.NaN;
-  const openEnded = validity.to == null || Number.isNaN(toMs);
-  const window = openEnded
-    ? `[${validity.from ?? ""}, open)`
-    : `[${validity.from ?? ""}, ${validity.to}]`;
-  const inside =
-    Number.isFinite(fromMs) &&
-    nowMs >= fromMs &&
-    (openEnded || nowMs <= toMs);
-  findings.push({
-    check: "evidence/validity",
-    grade: inside ? 0 : 1,
-    detail: `verification moment ${inside ? "inside" : "outside"} the validity window ${window}`,
-  });
-
-  const statusGrade = STATUS_GRADES[replay.status] ?? 1;
-  findings.push({
-    check: "status",
-    grade: statusGrade,
-    detail: STATUS_DETAILS[replay.status] ?? replay.status,
-  });
-  const safetyGrade = SAFETY_GRADES[replay.safety] ?? 1;
-  findings.push({
-    check: "safety",
-    grade: safetyGrade,
-    detail: SAFETY_DETAILS[replay.safety] ?? replay.safety,
-  });
-
-  const required = [
-    "product_id",
-    "resolver_uri",
-    "passport_id",
-    "eo_id",
-    "status",
-    "safety",
-    "validity",
-    "as_of",
-    "log_head",
-    "signature",
-  ];
-  const present = required.slice(0, 8).concat(["signature"]);
-
-  const grade = findings.reduce((acc, f) => worst(acc, f.grade), 0 as Grade);
-  const distinctSuites = new Set(slots.map((s) => s.suite)).size;
-  const trustMarker = trustMarkerOf(slots.length, distinctSuites, slots.length > 0, false);
-  const gradeName = (g: Grade) => GRADE_WIRE[g];
-  const findingGrade = (check: string): Grade =>
-    (findings.find((f) => f.check === check)?.grade ?? 0) as Grade;
-
-  return {
-    leg: {
-      grade: GRADE_TOKENS[grade],
-      exit_code: grade,
-      reading_answered: "current-state",
-      findings: findings.map((f) => ({
-        check: f.check,
-        detail: f.detail,
-        grade: gradeName(f.grade),
-      })),
-      readings: [
-        {
-          name: "cryptographic",
-          grade: gradeName(findings
-            .filter((f) => f.check.startsWith("signature/"))
-            .reduce((acc, f) => worst(acc, f.grade), 0 as Grade)),
-          detail: `${slots.length}/${slots.length} slots verified against the anchor; trust marker ${trustMarker}`,
-        },
-        {
-          name: "evidentiary",
-          grade: gradeName(
-            worst(
-              freshnessGrade,
-              worst(
-                findingGrade("evidence/log-head"),
-                findingGrade("evidence/validity"),
-              ),
-            ),
-          ),
-          detail: `as-of ${asOf}; freshness ${freshnessLabel}; coverage ${present.length}/${required.length}`,
-        },
-        {
-          name: "current-state",
-          grade: gradeName(worst(statusGrade, safetyGrade)),
-          detail: `status ${replay.status}; safety ${replay.safety}; retroactive taints not assessable from a Tier-A carrier (needs registry/revocation state)`,
-        },
-      ],
-      coverage: { present, required },
-      freshness: freshnessLabel,
-      trust_marker: trustMarker,
-      carrier: {
-        bytes: pack.bytes,
-        projected: pack.projected,
-        qr_version: pack.qr_version,
-      },
-      payload: {
-        as_of: asOf,
-        log_head: null,
-        safety: replay.safety,
-        signatures: slots.length,
-        status: replay.status,
-      },
-      signature: pack.signature
-        ? { suite: pack.signature.suite, key_id: pack.signature.key_id }
-        : { suite: "ecdsa-p256", key_id: "" },
-      signatures: slots.map((slot) => ({ suite: slot.suite, key_id: slot.key_id })),
-    },
-  };
+  [document, seedB, suites].forEach((p) => core.unidpp_free(p.ptr, p.len));
+  if (!outcome.ok) return { response: badRequest(`pack signing: ${outcome.error}`) };
+  return { leg: outcome.out };
 }
+
