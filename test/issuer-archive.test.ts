@@ -58,16 +58,29 @@ describe("the issuer Durable Object", () => {
 
     const event = await serve(issuer, `/passports/${body.passport_id}/events`, {
       method: "POST",
-      body: JSON.stringify({ event: { type: "state-change", to: "in-use" } }),
+      body: JSON.stringify({
+        type: "status-change",
+        data: { from: "issued", to: "consumed", authority: "urn:eo:owner" },
+      }),
     });
     expect(event.status).toBe(201);
-    const withEvents = (await event.json()) as { events: unknown[] };
-    expect(withEvents.events.length).toBe(1);
+    const withEvents = (await event.json()) as {
+      seq: number;
+      signature: { key_id: string } | null;
+      log_head: string;
+    };
+    expect(withEvents.seq).toBe(0);
+    expect(withEvents.signature?.key_id).toMatch(/^k-[0-9a-f]{16}$/);
+    expect(withEvents.log_head).toMatch(/^[0-9a-f]{64}$/);
 
     const read = await serve(issuer, `/passports/${body.passport_id}`);
     expect(read.status).toBe(200);
-    const document = (await read.json()) as { events: unknown[]; passport_id: string };
-    expect(document.events.length).toBe(1);
+    const document = (await read.json()) as {
+      log: { sealed: { event: { seq: number } }[] };
+      passport_id: string;
+    };
+    expect(document.log.sealed.length).toBe(1);
+    expect(document.log.sealed[0].event.seq).toBe(0);
     const listing = (await (await serve(issuer, "/passports")).json()) as { count: number };
     expect(listing.count).toBe(1);
     const absent = await serve(issuer, "/passports/no-such-passport");

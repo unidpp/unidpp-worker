@@ -40,6 +40,24 @@ export interface CoreExports {
     payloadLen: number,
     sigOut: number,
   ) => number;
+  unidpp_event_seal: (
+    request: number,
+    requestLen: number,
+    state: number,
+    stateLen: number,
+    seed: number,
+    seedLen: number,
+    outLen: number,
+    out: number,
+    outCap: number,
+  ) => number;
+  unidpp_event_body: (event: number, eventLen: number) => number;
+  unidpp_key_identity: (
+    seed: number,
+    seedLen: number,
+    suite: number,
+    suiteLen: number,
+  ) => number;
   unidpp_debug_note: () => number;
   unidpp_debug_parse_identity: (id: number, idLen: number) => number;
   unidpp_view_project: (

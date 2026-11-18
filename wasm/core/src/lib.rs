@@ -46,8 +46,8 @@ use unidpp_signatif::anchor::SignedTreeHead;
 use unidpp_signatif::{KeyPair, SignatureSlot, SigningDomain, Suite};
 
 fn operator_key(seed: &[u8]) -> Result<KeyPair, &'static str> {
-    if seed.len() != 32 {
-        return Err("the seed must be 32 bytes");
+    if seed.is_empty() {
+        return Err("the seed material must not be empty");
     }
     KeyPair::seeded(Suite::Ed25519, seed).map_err(|_| "key derivation failed")
 }
@@ -1009,11 +1009,9 @@ pub unsafe extern "C" fn unidpp_mint_pack(
     let minted = std::panic::catch_unwind(move || {
         let passport = Passport::from_json(&passport_text)
             .map_err(|e| format!("not a passport document: {e}"))?;
-        if seed_bytes.len() != 32 {
-            return Err("the signing seed must be 32 bytes".to_string());
+        if seed_bytes.is_empty() {
+            return Err("the signing seed must not be empty".to_string());
         }
-        let mut seed = [0u8; 32];
-        seed.copy_from_slice(&seed_bytes);
         let suites: Vec<Suite> = if suites_text.is_empty() {
             vec![Suite::EcdsaP256]
         } else {
@@ -1040,7 +1038,7 @@ pub unsafe extern "C" fn unidpp_mint_pack(
             passport.validity,
             Vec::new(),
         );
-        let (signed, anchors) = packfile::sign_pack_suites(&payload, &seed, &suites)
+        let (signed, anchors) = packfile::sign_pack_suites(&payload, &seed_bytes, &suites)
             .map_err(|e| format!("pack signing: {e}"))?;
         let packer = TierAPacker::new(unidpp_tier_a::qr::EcLevel::M, 40);
         let packed = packer.pack(&signed).map_err(|e| e.to_string())?;
@@ -1248,6 +1246,294 @@ fn parse_error(prefix: &str, message: String) -> i32 {
         DEBUG_TEXT = Some(format!("{prefix}: {message}"));
     }
     -1
+}
+
+// ---------------------------------------------------------------------------
+// The event-seal boundary: the native issuer's full typed intake —
+// type token, payload, the transition checks, the hash-chained append
+// into the passport's EventLog, and the ArtifactEvent signature under
+// the deployment's event key. The same unidpp-event intake layer the
+// native HTTP body runs, so the constructed events, their bytes and
+// their refusals agree with the native estate.
+// ---------------------------------------------------------------------------
+
+/// The intake outcome written through the note buffer: on success rc 0
+/// with the appended log, the signature record, the head and the
+/// status/safety/trust render; on refusal rc negative with
+/// `{"error": ..., "status": ...}` — the native texts verbatim.
+///
+/// # Safety
+/// `request_ptr`/`state_ptr` name readable JSON of the stated lengths;
+/// `seed` names 32 readable bytes; `out` names `out_cap` writable
+/// bytes; `out_len` names one writable u32.
+#[no_mangle]
+pub unsafe extern "C" fn unidpp_event_seal(
+    request_ptr: *const u8,
+    request_len: usize,
+    state_ptr: *const u8,
+    state_len: usize,
+    seed_ptr: *const u8,
+    seed_len: usize,
+    out_len: *mut u32,
+    out: *mut u8,
+    out_cap: usize,
+) -> i32 {
+    use unidpp_cli::passport::EventSignature;
+    use unidpp_event::intake::{default_payload, payload_from_data};
+    use unidpp_event::{EventPayload, EventType, TypedEvent};
+    use unidpp_model::time::Timestamp as ModelTimestamp;
+    use unidpp_model::TrustMarker;
+    let read = |ptr: *const u8, len: usize| -> String {
+        String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned()
+    };
+    let refuse = |status: u16, message: String| -> i32 {
+        unsafe {
+            DEBUG_TEXT = Some(serde_json::json!({"error": message, "status": status}).to_string());
+        }
+        -1
+    };
+    let request: serde_json::Value = match serde_json::from_str(&read(request_ptr, request_len)) {
+        Ok(v) => v,
+        Err(e) => return refuse(400, format!("invalid JSON body: {e}")),
+    };
+    let state: serde_json::Value = match serde_json::from_str(&read(state_ptr, state_len)) {
+        Ok(v) => v,
+        Err(e) => return refuse(400, format!("invalid state JSON: {e}")),
+    };
+    let outcome = (|| -> Result<serde_json::Value, (u16, String)> {
+        let Some(type_token) = request.get("type").and_then(|v| v.as_str()) else {
+            return Err((400, "`type` is required".into()));
+        };
+        let event_type = EventType::parse_token(type_token)
+            .map_err(|e| (400u16, format!("`type` `{type_token}`: {e}")))?;
+        let payload = match request.get("data").or_else(|| request.get("payload")) {
+            None | Some(serde_json::Value::Null) => {
+                default_payload(event_type).ok_or_else(|| {
+                    (
+                        400u16,
+                        format!(
+                            "`data` is required for {event_type} (the payload has operator-supplied fields)"
+                        ),
+                    )
+                })?
+            }
+            Some(data) => payload_from_data(event_type, data)
+                .map_err(|e| (400u16, format!("`data`: {e}")))?,
+        };
+        let occurred_at = match request.get("at") {
+            None | Some(serde_json::Value::Null) => {
+                let Some(now) = state.get("now").and_then(|v| v.as_i64()) else {
+                    return Err((
+                        400,
+                        "the state carries no `now` (the boundary carries no wall clock)".into(),
+                    ));
+                };
+                ModelTimestamp::from_secs(now)
+            }
+            Some(serde_json::Value::String(s)) => {
+                ModelTimestamp::parse(s).map_err(|e| (400u16, format!("`at`: {e}")))?
+            }
+            Some(_) => return Err((400, "`at` must be an RFC 3339 string".into())),
+        };
+        let sign = match request.get("sign") {
+            None | Some(serde_json::Value::Null) => true,
+            Some(v) => v
+                .as_bool()
+                .ok_or((400, "`sign` must be a boolean".into()))?,
+        };
+        let trust = if sign {
+            TrustMarker::Attested
+        } else {
+            TrustMarker::Unsigned
+        };
+        let mut log: unidpp_event::EventLog =
+            serde_json::from_value(state.get("log").cloned().unwrap_or(serde_json::Value::Null))
+                .map_err(|e| (400u16, format!("the state's `log` does not parse: {e}")))?;
+        let eo_id = state
+            .get("eo_id")
+            .and_then(|v| v.as_str())
+            .ok_or((400, "the state carries no `eo_id`".into()))?
+            .to_string();
+        let seq = log.len() as u64;
+        let actor_id = request
+            .get("actor")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&eo_id)
+            .to_string();
+        let actor_role = request
+            .get("actor_role")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| event_type.appender_role().to_string());
+        let typed = TypedEvent::new(
+            seq,
+            occurred_at,
+            &actor_role,
+            &actor_id,
+            event_type,
+            payload.clone(),
+            trust,
+        )
+        .map_err(|e| match e {
+            unidpp_event::EventError::IllegalTransition { from, to } => (
+                409u16,
+                format!("illegal status transition {from} -> {to} (I6)"),
+            ),
+            other => (400u16, format!("event rejected: {other}")),
+        })?;
+        // The log's own transition guard (the store's intake check):
+        // a status change must leave the log's current status.
+        if let EventPayload::StatusChange { from, to, .. } = &payload {
+            let current = log.current_status();
+            if *from != current {
+                return Err((
+                    409u16,
+                    format!(
+                        "illegal status transition {from} -> {to}: the log's current status is {current} (I6)"
+                    ),
+                ));
+            }
+        }
+        let body = typed
+            .canonical_body()
+            .map_err(|e| (400u16, format!("canonical body: {e}")))?;
+        let signature = if sign {
+            let seed_bytes = std::slice::from_raw_parts(seed_ptr, seed_len);
+            let key = operator_key(seed_bytes).map_err(|e| (400u16, e.to_string()))?;
+            let slot = SignatureSlot::sign(&key, SigningDomain::ArtifactEvent, &body)
+                .map_err(|e| (400u16, format!("event signing failed: {e}")))?;
+            Some(EventSignature {
+                seq,
+                suite: slot.suite.to_string(),
+                key_id: slot.key_id.to_string(),
+                signature: hex_lower(slot.signature.as_deref().unwrap_or(&[])),
+            })
+        } else {
+            None
+        };
+        let head = log
+            .append(typed, None, None)
+            .map_err(|e| (400u16, format!("event rejected: {e}")))?;
+        Ok(serde_json::json!({
+            "log": log,
+            "signature": signature,
+            "head": hex_lower(head.as_bytes()),
+            "seq": seq,
+            "event_type": event_type,
+            "occurred_at": occurred_at.to_string(),
+            "actor_id": actor_id,
+            "actor_role": actor_role,
+            "trust": trust,
+            "status": log.current_status(),
+            "safety": log.safety_flag(),
+        }))
+    })();
+    match outcome {
+        Ok(value) => match serde_json::to_string(&value) {
+            Ok(text) => {
+                let bytes = text.as_bytes();
+                if bytes.len() > out_cap {
+                    return refuse(500, "the seal output exceeds the buffer".into());
+                }
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len());
+                unsafe {
+                    out_len.write(bytes.len() as u32);
+                }
+                0
+            }
+            Err(_) => -2,
+        },
+        Err((status, message)) => {
+            let text = serde_json::json!({"error": message, "status": status}).to_string();
+            let bytes = text.as_bytes();
+            if bytes.len() > out_cap {
+                return -2;
+            }
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len());
+            unsafe {
+                out_len.write(bytes.len() as u32);
+            }
+            -1
+        }
+    }
+}
+
+/// The canonical body of a stored typed event (the bytes an
+/// ArtifactEvent signature covers) — the verdict audit's re-derivation
+/// over the sealed entry's own JSON. The body rides the note buffer.
+///
+/// # Safety
+/// `ptr` names `len` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn unidpp_event_body(ptr: *const u8, len: usize) -> i32 {
+    use unidpp_event::TypedEvent;
+    let text = String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned();
+    let outcome = (|| -> Result<Vec<u8>, String> {
+        let event: TypedEvent = serde_json::from_str(&text)
+            .map_err(|e| format!("the sealed event does not parse: {e}"))?;
+        event.canonical_body().map_err(|e| e.to_string())
+    })();
+    match outcome {
+        Ok(body) => {
+            unsafe {
+                DEBUG_TEXT = Some(hex_lower(&body));
+            }
+            0
+        }
+        Err(message) => {
+            unsafe {
+                DEBUG_TEXT = Some(message);
+            }
+            -1
+        }
+    }
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
+/// The identity of a seeded signing key: the suite's key pair derived
+/// from the seed material (the native keyring's derivation — the
+/// material is the label bytes, any length), rendered as
+/// `{suite, key_id, public}` through the note buffer.
+///
+/// # Safety
+/// `seed_ptr` names `seed_len` readable bytes; `suite_ptr` names
+/// `suite_len` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn unidpp_key_identity(
+    seed_ptr: *const u8,
+    seed_len: usize,
+    suite_ptr: *const u8,
+    suite_len: usize,
+) -> i32 {
+    let seed = std::slice::from_raw_parts(seed_ptr, seed_len);
+    let suite_text =
+        String::from_utf8_lossy(std::slice::from_raw_parts(suite_ptr, suite_len)).into_owned();
+    let suite = match suite_text.as_str() {
+        "ed25519" => Suite::Ed25519,
+        _ => return -1,
+    };
+    let key = match operator_key(seed) {
+        Ok(key) => key,
+        Err(_) => return -1,
+    };
+    unsafe {
+        DEBUG_TEXT = Some(
+            serde_json::json!({
+                "suite": key.suite().to_string(),
+                "key_id": key.key_id().as_str(),
+                "public": hex_lower(key.public().as_bytes()),
+            })
+            .to_string(),
+        );
+    }
+    0
 }
 
 /// Canonicalize a verification route (SI-11): the steps ride as JSON

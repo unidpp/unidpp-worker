@@ -156,15 +156,10 @@ function packSeed(core: CoreExports, envSeed: string | undefined): Uint8Array {
   if (envSeed && /^[0-9a-fA-F]{64}$/.test(envSeed.trim())) {
     return unhex(envSeed.trim());
   }
-  const label = new TextEncoder().encode("UNIDPP-ISSUER/PACK-SEED");
-  const labelPtr = core.unidpp_alloc(label.length);
-  new Uint8Array(core.memory.buffer, labelPtr, label.length).set(label);
-  const digestPtr = core.unidpp_alloc(32);
-  core.unidpp_sha256(labelPtr, label.length, digestPtr);
-  const digest = new Uint8Array(core.memory.buffer, digestPtr, 32).slice();
-  core.unidpp_free(labelPtr, label.length);
-  core.unidpp_free(digestPtr, 32);
-  return digest;
+  // The native dev label — the same bytes the native keyring derives
+  // its pack keys from, so the packs' anchors agree with the native
+  // estate's byte for byte.
+  return new TextEncoder().encode("unidpp-issuer/pack|unidpp-issuer/dev-1");
 }
 
 function mintPackDocument(
@@ -279,8 +274,21 @@ export class IssuerDO {
     } else if (op.op === "append-event") {
       const record = this.passports.get(op.passport_id as string);
       if (record) {
-        const events = (record.document.events as unknown[] | undefined) ?? [];
-        record.document.events = [...events, op.event];
+        // The sealed form carries the whole appended log (the seal
+        // boundary's output); the legacy journal form carried the bare
+        // event object under `events` — a field the document grammar
+        // never parsed.
+        if (op.sealed !== undefined) {
+          record.document.log = op.sealed;
+          if (op.signature) {
+            const signatures =
+              (record.document.event_signatures as unknown[] | undefined) ?? [];
+            record.document.event_signatures = [...signatures, op.signature];
+          }
+        } else {
+          const events = (record.document.events as unknown[] | undefined) ?? [];
+          record.document.events = [...events, op.event];
+        }
       }
       this.events.push(op);
     } else if (op.op === "register-profile") {
@@ -314,11 +322,13 @@ export class IssuerDO {
       };
     }
     if (op.op === "append-event") {
+      const sealed = (op.sealed as { sealed?: { event: unknown }[] } | undefined)?.sealed;
+      const event = sealed?.[sealed.length - 1]?.event ?? op.event;
       return {
         AppendEvent: {
           passport_id: op.passport_id,
-          event: op.event,
-          signature: null,
+          event,
+          signature: op.signature ?? null,
         },
       };
     }
@@ -396,17 +406,43 @@ export class IssuerDO {
     }
     const record = this.passports.get(passportId);
     if (!record) return stamped(404, { error: `no passport \`${passportId}\`` });
-    const event = v.event ?? v;
+    // The seal boundary: the native intake — the typed construction,
+    // the transition checks, the hash-chained append into the
+    // passport's log, the ArtifactEvent signature under the event
+    // key. The boundary carries no wall clock: the DO supplies now.
+    const seal = eventSeal(
+      this.core,
+      v,
+      {
+        log: record.document.log,
+        passport_id: passportId,
+        eo_id: record.document.eo_id,
+        now: Math.floor(Date.now() / 1000),
+      },
+      eventSeedMaterial(this.core, (this.env as { UNIDPP_ISSUER_SIGN_SEED?: string } | undefined)?.UNIDPP_ISSUER_SIGN_SEED),
+    );
+    if (!seal.ok) return stamped(seal.status, { error: seal.error });
+    const out = seal.out;
     const op: JournalOp = {
       op: "append-event",
       passport_id: passportId,
-      event,
+      sealed: out.log,
+      signature: out.signature,
     };
     const seq = await this.journal.append(op);
     this.apply(op, seq);
     return stamped(201, {
       passport_id: passportId,
-      events: record.document.events,
+      seq: out.seq,
+      event_type: out.event_type,
+      occurred_at: out.occurred_at,
+      actor_id: out.actor_id,
+      actor_role: out.actor_role,
+      trust: out.trust,
+      signature: out.signature,
+      log_head: out.head,
+      status: out.status,
+      safety: out.safety,
       audit_seq: record.audit_seq,
     });
   }
@@ -790,6 +826,84 @@ const optStr = (v: Record<string, unknown>, key: string): string | null => {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 };
 
+// The event key's seed material: the deployment's env seed (32 raw
+// bytes) when set, else the native dev label — the bytes
+// `unidpp-issuer/event|unidpp-issuer/dev-1`, the same derivation the
+// native keyring runs, so the edge's event signatures verify against
+// the native estate's anchors byte for byte.
+function eventSeedMaterial(core: CoreExports, envSeed: string | undefined): Uint8Array {
+  void core;
+  if (envSeed && /^[0-9a-fA-F]{64}$/.test(envSeed.trim())) {
+    return unhex(envSeed.trim());
+  }
+  return new TextEncoder().encode("unidpp-issuer/event|unidpp-issuer/dev-1");
+}
+
+// The event-seal boundary call: the native intake — the typed
+// construction, the transition checks, the hash-chained append into
+// the passport's log, the ArtifactEvent signature. The refusal rides
+// back as the native text with its status.
+function eventSeal(
+  core: CoreExports,
+  request: Record<string, unknown>,
+  state: Record<string, unknown>,
+  material: Uint8Array,
+): { ok: true; out: Record<string, unknown> } | { ok: false; status: number; error: string } {
+  const put = (text: string): { ptr: number; len: number } => {
+    const bytes = new TextEncoder().encode(text);
+    const ptr = core.unidpp_alloc(bytes.length);
+    new Uint8Array(core.memory.buffer, ptr, bytes.length).set(bytes);
+    return { ptr, len: bytes.length };
+  };
+  const rq = put(JSON.stringify(request));
+  const st = put(JSON.stringify(state));
+  const seedPtr = core.unidpp_alloc(material.length);
+  new Uint8Array(core.memory.buffer, seedPtr, material.length).set(material);
+  const lenPtr = core.unidpp_alloc(4);
+  const out = core.unidpp_alloc(1048576);
+  const rc = core.unidpp_event_seal(
+    rq.ptr,
+    rq.len,
+    st.ptr,
+    st.len,
+    seedPtr,
+    material.length,
+    lenPtr,
+    out,
+    1048576,
+  );
+  [rq, st].forEach((p) => core.unidpp_free(p.ptr, p.len));
+  core.unidpp_free(seedPtr, material.length);
+  const len = Number(new DataView(core.memory.buffer, lenPtr).getUint32(0, true));
+  const text = new TextDecoder().decode(new Uint8Array(core.memory.buffer, out, len).slice());
+  core.unidpp_free(out, 1048576);
+  const parsed = JSON.parse(text) as Record<string, unknown>;
+  if (rc === 0) return { ok: true, out: parsed };
+  return {
+    ok: false,
+    status: Number(parsed.status ?? 400),
+    error: String(parsed.error ?? text),
+  };
+}
+
+// The canonical body of a stored typed event, through the boundary —
+// the bytes an ArtifactEvent signature covers.
+function eventBodyHex(core: CoreExports, event: unknown): { ok: true; hex: string } | { ok: false; error: string } {
+  const bytes = new TextEncoder().encode(JSON.stringify(event));
+  const ptr = core.unidpp_alloc(bytes.length);
+  new Uint8Array(core.memory.buffer, ptr, bytes.length).set(bytes);
+  const rc = core.unidpp_event_body(ptr, bytes.length);
+  core.unidpp_free(ptr, bytes.length);
+  const notePtr = core.unidpp_alloc(1048576);
+  const noteLen = core.unidpp_note_take(notePtr);
+  const note = new TextDecoder().decode(
+    new Uint8Array(core.memory.buffer, notePtr, Math.max(0, noteLen)).slice(),
+  );
+  core.unidpp_free(notePtr, 1048576);
+  if (rc !== 0) return { ok: false, error: note };
+  return { ok: true, hex: note };
+}
+
 // An optional RFC 3339 body timestamp; the invalid case carries the
 // raw token (the native parse error names it).
 const optTimestamp = (
@@ -848,22 +962,26 @@ function eventAnchor(
   core: CoreExports,
   envSeed: string | undefined,
 ): { suite: string; key_id: string; public: string } {
-  const material =
-    envSeed && /^[0-9a-fA-F]{64}$/.test(envSeed.trim())
-      ? unhex(envSeed.trim())
-      : coreDigest(core, new TextEncoder().encode("UNIDPP-ISSUER/EVENT-SEED"));
-  const materialPtr = core.unidpp_alloc(32);
-  new Uint8Array(core.memory.buffer, materialPtr, 32).set(material);
-  const publicPtr = core.unidpp_alloc(32);
-  core.unidpp_head_public(materialPtr, publicPtr);
-  const publicHex = hexOf(new Uint8Array(core.memory.buffer, publicPtr, 32).slice());
-  const keyIdLen = core.unidpp_head_key_id(materialPtr, publicPtr);
-  const keyId = new TextDecoder().decode(
-    new Uint8Array(core.memory.buffer, publicPtr, keyIdLen).slice(),
+  // The key identity rides the boundary: the same derivation the seal
+  // runs (the native keyring's label), so the anchor names the key
+  // the signatures carry.
+  const material = eventSeedMaterial(core, envSeed);
+  const materialPtr = core.unidpp_alloc(material.length);
+  new Uint8Array(core.memory.buffer, materialPtr, material.length).set(material);
+  const suite = new TextEncoder().encode("ed25519");
+  const suitePtr = core.unidpp_alloc(suite.length);
+  new Uint8Array(core.memory.buffer, suitePtr, suite.length).set(suite);
+  const rc = core.unidpp_key_identity(materialPtr, material.length, suitePtr, suite.length);
+  core.unidpp_free(materialPtr, material.length);
+  core.unidpp_free(suitePtr, suite.length);
+  const notePtr = core.unidpp_alloc(4096);
+  const noteLen = core.unidpp_note_take(notePtr);
+  const note = new TextDecoder().decode(
+    new Uint8Array(core.memory.buffer, notePtr, Math.max(0, noteLen)).slice(),
   );
-  core.unidpp_free(materialPtr, 32);
-  core.unidpp_free(publicPtr, 32);
-  return { suite: "ed25519", key_id: keyId, public: publicHex };
+  core.unidpp_free(notePtr, 4096);
+  if (rc !== 0) throw new Error("the event key derivation failed");
+  return JSON.parse(note) as { suite: string; key_id: string; public: string };
 }
 
 // The event-signature self-audit (the verdict's dedicated audit leg:
@@ -875,17 +993,86 @@ function eventSignatureAudit(
   env: Record<string, string | undefined>,
 ): Record<string, unknown> {
   const signatures =
-    (record.document.event_signatures as { seq: number }[] | undefined) ?? [];
-  const failures = signatures.map((sig) => ({
-    seq: sig.seq,
-    why: `signature names seq ${sig.seq} but no such event is sealed`,
-  }));
+    (record.document.event_signatures as
+      | { seq: number; suite: string; key_id: string; signature: string }[]
+      | undefined) ?? [];
+  const sealed =
+    ((record.document.log as { sealed?: { event: unknown }[] } | undefined)
+      ?.sealed ?? []) as { event: unknown }[];
+  const anchor = eventAnchor(core, env.UNIDPP_ISSUER_SIGN_SEED);
+  let verified = 0;
+  const failures: { seq: number; why: string }[] = [];
+  for (const sig of signatures) {
+    const entry = sealed[sig.seq];
+    const why = (() => {
+      if (!entry || (entry.event as { seq?: number })?.seq !== sig.seq) {
+        return `signature names seq ${sig.seq} but no such event is sealed`;
+      }
+      const body = eventBodyHex(core, entry.event);
+      if (!body.ok) return `canonical body: ${body.error}`;
+      const rc = verifyRaw(
+        core,
+        "artifact-event",
+        sig.suite,
+        anchor.public,
+        body.hex,
+        sig.signature,
+      );
+      if (rc === null) return `suite \`${sig.suite}\` does not ride the boundary`;
+      if (rc !== 1) return "the signature does not verify under the anchor";
+      return null;
+    })();
+    if (why === null) verified += 1;
+    else failures.push({ seq: sig.seq, why });
+  }
   return {
     total: signatures.length,
-    verified: 0,
+    verified,
     failures,
-    anchor: eventAnchor(core, env.UNIDPP_ISSUER_SIGN_SEED),
+    anchor,
   };
+}
+
+// The raw verify call through the boundary (the domain token, the
+// suite token, the hex public, the hex payload, the hex signature);
+// a suite the boundary carries answers null.
+function verifyRaw(
+  core: CoreExports,
+  domain: string,
+  suite: string,
+  publicHex: string,
+  payloadHex: string,
+  signatureHex: string,
+): number | null {
+  const put = (bytes: Uint8Array): { ptr: number; len: number } => {
+    const ptr = core.unidpp_alloc(bytes.length);
+    new Uint8Array(core.memory.buffer, ptr, bytes.length).set(bytes);
+    return { ptr, len: bytes.length };
+  };
+  const suiteSizes: Record<string, number> = { ed25519: 32, "ecdsa-p256": 65 };
+  const size = suiteSizes[suite];
+  if (!size) return null;
+  const domainB = put(new TextEncoder().encode(domain));
+  const suiteB = put(new TextEncoder().encode(suite));
+  const publicB = put(unhex(publicHex));
+  const payloadB = put(unhex(payloadHex));
+  const sigB = put(unhex(signatureHex));
+  const rc = core.unidpp_verify_raw(
+    domainB.ptr,
+    domainB.len,
+    suiteB.ptr,
+    suiteB.len,
+    publicB.ptr,
+    publicB.len,
+    payloadB.ptr,
+    payloadB.len,
+    sigB.ptr,
+    sigB.len,
+  );
+  [domainB, suiteB, publicB, payloadB, sigB].forEach((p) =>
+    core.unidpp_free(p.ptr, p.len),
+  );
+  return rc;
 }
 
 // The trust marker ladder (I9) over signing evidence.
@@ -972,9 +1159,23 @@ function replayEvents(
   let lastEventMs = Number.NEGATIVE_INFINITY;
   let eventsTotal = 0;
   for (const raw of events) {
-    const event = (raw ?? {}) as Record<string, unknown>;
-    const type = typeof event["type"] === "string" ? (event["type"] as string) : "";
-    const to = typeof event["to"] === "string" ? (event["to"] as string).trim() : "";
+    // The sealed form wraps the typed event; the legacy journal form
+    // carried the bare event object.
+    const outer = (raw ?? {}) as Record<string, unknown>;
+    const event = (outer.event ?? outer) as Record<string, unknown>;
+    const payload = event["payload"] as Record<string, unknown> | undefined;
+    const type =
+      typeof event["event_type"] === "string"
+        ? (event["event_type"] as string)
+        : typeof event["type"] === "string"
+          ? (event["type"] as string)
+          : "";
+    const statusChange = payload?.["StatusChange"] as Record<string, unknown> | undefined;
+    const custody = payload?.["CustodyTransfer"] as Record<string, unknown> | undefined;
+    const to =
+      (statusChange?.["to"] as string | undefined) ??
+      (custody?.["to"] as string | undefined) ??
+      (typeof event["to"] === "string" ? (event["to"] as string).trim() : "");
     const occurredAt =
       typeof event["occurred_at"] === "string" ? (event["occurred_at"] as string) : null;
     const occurredMs = occurredAt !== null && !Number.isNaN(Date.parse(occurredAt))
@@ -987,12 +1188,18 @@ function replayEvents(
     // The evidentiary prefix: events at or before the verification
     // instant (the native's log.as_of(at)).
     if (occurredMs === null || occurredMs <= atMs) eventsTotal += 1;
-    if (type === "status-change" && VALID_STATUS_TOKENS.has(to)) status = to;
-    if (type === "custody-transfer" && to) custodian = to;
+    if (
+      (type === "status.change" || type === "status-change") &&
+      VALID_STATUS_TOKENS.has(to)
+    )
+      status = to;
+    if (type === "custody.transfer" || type === "custody-transfer") {
+      if (to) custodian = to;
+    }
     if (type === "correction") corrections += 1;
-    if (type === "recall-campaign") recalls += 1;
-    if (type === "flag-security") securityFlags += 1;
-    if (type === "inspection-stamp") stamps += 1;
+    if (type === "recall.campaign" || type === "recall-campaign") recalls += 1;
+    if (type === "flag.security" || type === "flag-security") securityFlags += 1;
+    if (type === "inspection.stamp" || type === "inspection-stamp") stamps += 1;
   }
   return {
     status,
@@ -1013,7 +1220,13 @@ function logVerdictLeg(
   record: PassportRecord,
   nowMs: number,
 ): Record<string, unknown> {
-  const events = (record.document.events as unknown[] | undefined) ?? [];
+  // The sealed log is the authoritative record; the legacy journal
+  // form kept bare event objects under `events`.
+  const sealedLog = (record.document.log as { sealed?: unknown[] } | undefined)?.sealed;
+  const events =
+    sealedLog ??
+    (record.document.events as unknown[] | undefined) ??
+    [];
   const eventSignatures =
     (record.document.event_signatures as unknown[] | undefined) ?? [];
   const replay = replayEvents(events, nowMs);
@@ -1101,7 +1314,13 @@ function tierAVerdictLeg(
     });
   });
 
-  const events = (record.document.events as unknown[] | undefined) ?? [];
+  // The sealed log is the authoritative record; the legacy journal
+  // form kept bare event objects under `events`.
+  const sealedLog = (record.document.log as { sealed?: unknown[] } | undefined)?.sealed;
+  const events =
+    sealedLog ??
+    (record.document.events as unknown[] | undefined) ??
+    [];
   const replay = replayEvents(events, nowMs);
   const asOfMs = replay.last_event_at
     ? Date.parse(replay.last_event_at)

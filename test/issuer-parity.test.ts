@@ -203,11 +203,9 @@ describe("the verdict route", () => {
     const event = await serve(issuer, `/passports/${encodeURIComponent(passportId)}/events`, {
       method: "POST",
       body: JSON.stringify({
-        event: {
-          type: "status-change",
-          to: "suspended",
-          occurred_at: "2026-01-01T00:00:00Z",
-        },
+        type: "status-change",
+        data: { from: "issued", to: "suspended", authority: "urn:eo:market-surveillance" },
+        at: "2026-01-01T00:00:00Z",
       }),
     });
     expect(event.status).toBe(201);
@@ -395,7 +393,10 @@ describe("the admin surface", () => {
     const passportId = await mintPassport(issuer, "local:demo:audit-1");
     await serve(issuer, `/passports/${encodeURIComponent(passportId)}/events`, {
       method: "POST",
-      body: JSON.stringify({ event: { type: "custody-transfer", to: "holder-1" } }),
+      body: JSON.stringify({
+        type: "custody-transfer",
+        data: { from: "urn:eo:mfg", to: "holder-1", counterparty_signed: true },
+      }),
     });
     await serve(issuer, "/admin/profiles", {
       method: "POST",
