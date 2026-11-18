@@ -129,8 +129,12 @@ describe("the class descriptor intake", () => {
       }),
     });
     expect(served.status).toBe(400);
-    const body = (await served.json()) as { error: string };
-    expect(body.error).toContain("manifest.signature");
+    const body = (await served.json()) as {
+      error: string;
+      errors: { check: string; path: string; message: string }[];
+    };
+    expect(body.error).toContain("class-descriptor-signature-required rejected the item");
+    expect(body.errors[0].path).toBe("manifest.signature");
   });
 
   it("refuses a class_id that does not name the item", async () => {
@@ -278,7 +282,7 @@ describe("the instance intake", () => {
         manifest: {
           version: "1.1.0",
           instance_of: "tyre-e8",
-          features: { "tyre.season": true },
+          features: { "tyre.pressure-bar": "flat", "tyre.season": "summer" },
         },
       }),
     });

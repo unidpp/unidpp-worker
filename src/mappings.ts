@@ -275,6 +275,15 @@ export async function workbench(request: Request, env: WorkbenchEnv): Promise<Re
       }),
     );
   }
-  const refusal = ((await registered.json()) as { error?: string }).error ?? "the register refused";
+  const refused = (await registered.json()) as {
+    error?: string;
+    errors?: { path: string; message: string }[];
+  };
+  const refusal =
+    (refused.errors ?? [])
+      .map((e) => (e.path ? `${e.path}: ${e.message}` : e.message))
+      .join("; ") ||
+    refused.error ||
+    "the register refused";
   return htmlResponse(renderWorkbench({ item, canonical: verdict, error: refusal }));
 }

@@ -148,9 +148,15 @@ describe("the rule-expression language", () => {
       "tyre.season": "winter",
     });
     expect(served.status).toBe(400);
-    const body = (await served.json()) as { error: string };
-    expect(body.error).toContain("rule.pressure-range");
-    expect(body.error).toContain("not satisfied");
+    const body = (await served.json()) as {
+      error: string;
+      errors: { check: string; path: string; message: string }[];
+    };
+    // The check accumulates its failures; the rule refusal names its
+    // id in the list (the error line names the first failure).
+    const ruleFailure = body.errors.find((e) => e.path.startsWith("manifest.rule_references"));
+    expect(ruleFailure?.message).toContain("rule.pressure-range");
+    expect(ruleFailure?.message).toContain("not satisfied");
   });
 
   it("registers an instance satisfying the referenced rules", async () => {

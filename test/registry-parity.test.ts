@@ -36,6 +36,8 @@ const post = (registry: RegistryDO, path: string, body: unknown): Promise<Respon
 const bodyOf = async (response: Response): Promise<Record<string, unknown>> =>
   (await response.json()) as Record<string, unknown>;
 
+// Profiles ride the signed form (the intake chain's first profile
+// check): the issuer block and the signature slot the check demands.
 const createBody = (itemId: string, itemClass: string, extra?: Record<string, unknown>) => ({
   register_id: "unidpp-dev",
   item_id: itemId,
@@ -43,6 +45,19 @@ const createBody = (itemId: string, itemClass: string, extra?: Record<string, un
   definition: `The ${itemId} item`,
   version: "1.0.0",
   ...extra,
+  // The signed form rides last (the intake chain's first profile
+  // check), merged with whatever manifest the caller supplied.
+  ...(itemClass === "profile"
+    ? {
+        manifest: {
+          version: "1.0.0",
+          ...((extra?.manifest as Record<string, unknown>) ?? {}),
+          issuer_class: "attestation",
+          issuer: "urn:eo:unidpp-dev",
+          signature: { signature: "dGVzdC1zaWduYXR1cmU" },
+        },
+      }
+    : {}),
 });
 
 // A signed service descriptor body: the operator block and the

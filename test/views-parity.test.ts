@@ -41,6 +41,9 @@ const LENS_ITEM = {
   version: "1.0.0",
   manifest: {
     version: "1.0.0",
+    issuer_class: "attestation",
+    issuer: "urn:eo:unidpp-worker",
+    signature: { signature: "dGVzdC1zaWduYXR1cmU" },
     profile: {
       id: "urn:unidpp:profile:render-lens",
       axes: { jurisdiction: "EU", sector: "batteries", characteristic: "battery-passport" },

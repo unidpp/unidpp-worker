@@ -94,7 +94,12 @@ describe("the views surface", () => {
           class: "profile",
           definition: "The EU battery lens",
           version: "1.0.0",
-          manifest: LENS_ITEM.manifest,
+          manifest: {
+            ...LENS_ITEM.manifest,
+            issuer_class: "attestation",
+            issuer: "urn:eo:unidpp-worker",
+            signature: { signature: "dGVzdC1zaWduYXR1cmU" },
+          },
         }),
       }),
     );

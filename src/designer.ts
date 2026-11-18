@@ -194,11 +194,13 @@ function validateDraft(
   // The draft's own shape: the signed form's issuer fields (the
   // signature slot itself is the console's job at submit — the page
   // states it), plus the manifest checks intake will run.
+  const line = (f: { path: string; message: string }): string =>
+    f.path ? `${f.path}: ${f.message}` : f.message;
   const descriptor = [
-    ...descriptorSignatureErrors(draft.manifest).filter(
-      (e) => !e.startsWith("manifest.signature"),
-    ),
-    ...descriptorManifestErrors(draft.classId, draft.manifest),
+    ...descriptorSignatureErrors(draft.manifest)
+      .filter((f) => f.path !== "manifest.signature")
+      .map(line),
+    ...descriptorManifestErrors(draft.classId, draft.manifest).map(line),
   ];
   const parsed = parseFeatureSpecs(draft.manifest);
   const specs = parsed.ok ? parsed.specs : [];
@@ -218,7 +220,7 @@ function validateDraft(
       features,
       { item: resolveUnit },
       checkUnits,
-    );
+    ).map(line);
     for (const reference of (draft.manifest["rule_references"] as string[] | undefined) ?? []) {
       const expression = declaredRules.get(reference);
       if (!expression) continue;
@@ -440,11 +442,18 @@ export async function designer(
       }),
     );
   }
-  const refusal = ((await registered.json()) as { error?: string }).error ?? "the register refused";
+  const refused = (await registered.json()) as {
+    error?: string;
+    errors?: { path: string; message: string }[];
+  };
+  const refusal = refused.error ?? "the register refused";
+  const refusalLines = (refused.errors ?? []).map(
+    (e) => (e.path ? `${e.path}: ${e.message}` : e.message),
+  );
   return htmlResponse(
     renderDesigner({
       draft,
-      descriptor: [refusal],
+      descriptor: refusalLines.length > 0 ? refusalLines : [refusal],
       instances: [],
     }),
   );

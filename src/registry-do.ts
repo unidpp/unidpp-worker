@@ -814,22 +814,34 @@ export interface FeatureSpec {
 // the relation form): source, target, version and a tiered kind.
 // The tier duties the shape check enforces at intake, per clause
 // 15's intake obligation.
+const mappingFailure = (path: string, message: string): IntakeFailure => ({
+  check: "cross-register-mapping-integrity",
+  path,
+  message,
+});
+
 export function mappingTierErrors(
   manifest: Record<string, unknown>,
   store: RegistryState,
-): string[] {
-  const errors: string[] = [];
+): IntakeFailure[] {
+  const splitFailure = (line: string): IntakeFailure => {
+    const at = line.indexOf(": ");
+    return at > 0
+      ? mappingFailure(line.slice(0, at), line.slice(at + 2))
+      : mappingFailure("manifest", line);
+  };
+  const errors: IntakeFailure[] = [];
   const source = typeof manifest["source"] === "string" ? manifest["source"] : "";
   const target = typeof manifest["target"] === "string" ? manifest["target"] : "";
-  if (!source) errors.push("manifest.source: the mapping names its source item");
-  if (!target) errors.push("manifest.target: the mapping names its target item");
+  if (!source) errors.push(splitFailure("manifest.source: the mapping names its source item"));
+  if (!target) errors.push(splitFailure("manifest.target: the mapping names its target item"));
   const version = manifest["version"];
   if (typeof version !== "number" || !Number.isInteger(version) || version < 1) {
-    errors.push("manifest.version: the mapping's own version is a positive integer");
+    errors.push(splitFailure("manifest.version: the mapping's own version is a positive integer"));
   }
   const kind = manifest["kind"] as Record<string, unknown> | undefined;
   if (!kind || typeof kind !== "object") {
-    errors.push("manifest.kind: the tier form carries its tiered kind");
+    errors.push(splitFailure("manifest.kind: the tier form carries its tiered kind"));
     return errors;
   }
   for (const [side, reference] of [
@@ -840,7 +852,9 @@ export function mappingTierErrors(
     const identifier = reference.split("@")[0];
     if (!store.item(identifier)) {
       errors.push(
-        `manifest.${side}: dangling reference: no registry item \`${identifier}\` names the ${side} end`,
+        splitFailure(
+          `manifest.${side}: dangling reference: no registry item \`${identifier}\` names the ${side} end`,
+        ),
       );
     }
   }
@@ -848,38 +862,28 @@ export function mappingTierErrors(
   if (tier === "deterministic") {
     const transform = kind["transform"];
     if (typeof transform !== "string" || !transform.trim()) {
-      errors.push(
-        "manifest.kind.transform: a tier-1 mapping names its registered, versioned transform",
-      );
+      errors.push(splitFailure("manifest.kind.transform: a tier-1 mapping names its registered, versioned transform"));
     }
   } else if (tier === "correspondence") {
     const scope = kind["scope"];
     if (!Array.isArray(scope) || scope.length === 0) {
-      errors.push(
-        "manifest.kind.scope: a tier-2 correspondence declares its scope (what it covers)",
-      );
+      errors.push(splitFailure("manifest.kind.scope: a tier-2 correspondence declares its scope (what it covers)"));
     }
     const residual = kind["residual"];
     if (typeof residual !== "string" || !residual.trim()) {
-      errors.push(
-        "manifest.kind.residual: a tier-2 correspondence states its residual (what it does not cover)",
-      );
+      errors.push(splitFailure("manifest.kind.residual: a tier-2 correspondence states its residual (what it does not cover)"));
     }
     const attester = kind["attester"];
     if (typeof attester !== "string" || !attester.trim()) {
-      errors.push("manifest.kind.attester: a tier-2 correspondence names its attester");
+      errors.push(splitFailure("manifest.kind.attester: a tier-2 correspondence names its attester"));
     }
   } else if (tier === "no-mapping") {
     const note = kind["note"];
     if (typeof note !== "string" || !note.trim()) {
-      errors.push(
-        "manifest.kind.note: a tier-3 record states why no correspondence is asserted",
-      );
+      errors.push(splitFailure("manifest.kind.note: a tier-3 record states why no correspondence is asserted"));
     }
   } else {
-    errors.push(
-      "manifest.kind.tier: the tier is one of deterministic, correspondence, no-mapping",
-    );
+    errors.push(splitFailure("manifest.kind.tier: the tier is one of deterministic, correspondence, no-mapping"));
   }
   return errors;
 }
@@ -951,84 +955,236 @@ export function parseFeatureSpecs(
 // The signed form a class descriptor registers under (the same
 // discipline a profile manifest carries; the cryptographic reading
 // is the trust service's).
-export function descriptorSignatureErrors(manifest: Record<string, unknown>): string[] {
-  const errors: string[] = [];
+// The intake chain's failure record: the native IntakeError's wire
+// form — the check that rejected, the manifest path, the verbatim
+// message.
+export interface IntakeFailure {
+  check: string;
+  path: string;
+  message: string;
+}
+
+// The native intake_error_response: the first failing check names the
+// refusal, the full list rides beside it.
+export function intakeResponse(
+  failures: IntakeFailure[],
+  asOf: string,
+): Response {
+  const list = failures.map((f) => ({
+    check: f.check,
+    path: f.path,
+    message: f.message,
+  }));
+  const first = failures[0];
+  const error = first
+    ? `${first.check} rejected the item: ${first.message}`
+    : "intake validation failed";
+  return stamped(400, { error, errors: list }, asOf);
+}
+
+const signatureFailure = (
+  path: string,
+  message: string,
+): IntakeFailure => ({
+  check: "class-descriptor-signature-required",
+  path,
+  message,
+});
+
+export function descriptorSignatureErrors(
+  manifest: Record<string, unknown> | undefined,
+): IntakeFailure[] {
+  if (!manifest) {
+    return [
+      signatureFailure(
+        "manifest",
+        "a class descriptor registers its SIGNED manifest (issuer_class, issuer, signature) — no manifest given",
+      ),
+    ];
+  }
+  const failures: IntakeFailure[] = [];
   const issuerClass = manifest["issuer_class"];
-  if (typeof issuerClass !== "string" || !ISSUER_CLASSES.includes(issuerClass)) {
-    errors.push(
-      `manifest.issuer_class: \`${String(issuerClass)}\` is not an issuer class (one of ${ISSUER_CLASSES.join(", ")})`,
+  if (typeof issuerClass !== "string" || !issuerClass.trim()) {
+    failures.push(
+      signatureFailure(
+        "manifest.issuer_class",
+        "class descriptors are signed by their issuer: the manifest must state its issuer_class (law | treaty | consensus | declaration | attestation)",
+      ),
+    );
+  } else if (!ISSUER_CLASSES.includes(issuerClass)) {
+    failures.push(
+      signatureFailure(
+        "manifest.issuer_class",
+        `\`${issuerClass}\` is not an issuer class (one of ${ISSUER_CLASSES.join(", ")})`,
+      ),
     );
   }
   const issuer = manifest["issuer"];
   if (typeof issuer !== "string" || !issuer.trim()) {
-    errors.push("manifest.issuer: the issuing node's id is required (the signer of record)");
+    failures.push(
+      signatureFailure("manifest.issuer", "the issuing node's id is required (the signer of record)"),
+    );
   }
   const signature = (manifest["signature"] as Record<string, unknown> | undefined)?.["signature"];
   if (typeof signature !== "string" || !signature.trim()) {
-    errors.push(
-      "manifest.signature: class descriptors register only in their SIGNED form (a signature slot with a signature value)",
+    failures.push(
+      signatureFailure(
+        "manifest.signature",
+        "class descriptors register only in their SIGNED form: a signature slot with a signature value is required (the cryptographic reading is the trust service's)",
+      ),
     );
   }
-  return errors;
+  return failures;
 }
+
+const profileSignatureFailure = (path: string, message: string): IntakeFailure => ({
+  check: "profile-signature-required",
+  path,
+  message,
+});
+
+// The profile's signed form (the chain's first profile check): the
+// issuer class, the issuing node, the signature slot filled.
+export function profileSignatureErrors(
+  manifest: Record<string, unknown> | undefined,
+): IntakeFailure[] {
+  if (!manifest) {
+    return [
+      profileSignatureFailure(
+        "manifest",
+        "a profile item registers its SIGNED manifest (issuer_class, issuer, signature) — no manifest given",
+      ),
+    ];
+  }
+  const failures: IntakeFailure[] = [];
+  const issuerClass = manifest["issuer_class"];
+  if (typeof issuerClass !== "string" || !issuerClass.trim()) {
+    failures.push(
+      profileSignatureFailure(
+        "manifest.issuer_class",
+        "profiles are signed by their issuer: the manifest must state its issuer_class (law | treaty | consensus | declaration | attestation)",
+      ),
+    );
+  } else if (!ISSUER_CLASSES.includes(issuerClass)) {
+    failures.push(
+      profileSignatureFailure(
+        "manifest.issuer_class",
+        `\`${issuerClass}\` is not an issuer class (one of ${ISSUER_CLASSES.join(", ")})`,
+      ),
+    );
+  }
+  const issuer = manifest["issuer"];
+  if (typeof issuer !== "string" || !issuer.trim()) {
+    failures.push(
+      profileSignatureFailure("manifest.issuer", "the issuing node's id is required (the signer of record)"),
+    );
+  }
+  const signature = (manifest["signature"] as Record<string, unknown> | undefined)?.["signature"];
+  if (typeof signature !== "string" || !signature.trim()) {
+    failures.push(
+      profileSignatureFailure(
+        "manifest.signature",
+        "profiles register only in their SIGNED form: a signature slot with a signature value is required (the cryptographic reading is the trust service's)",
+      ),
+    );
+  }
+  return failures;
+}
+
+const manifestFailure = (path: string, message: string): IntakeFailure => ({
+  check: "class-descriptor-manifest",
+  path,
+  message,
+});
 
 export function descriptorManifestErrors(
   identifier: string,
   manifest: Record<string, unknown>,
-): string[] {
-  const errors: string[] = [];
+): IntakeFailure[] {
+  const failures: IntakeFailure[] = [];
   const classId = manifest["class_id"];
   if (typeof classId !== "string" || !classId) {
-    errors.push("manifest.class_id: the descriptor states its class_id (the identifier names the class)");
+    failures.push(
+      manifestFailure("manifest.class_id", "the descriptor states its class_id (the identifier names the class)"),
+    );
   } else if (classId !== identifier) {
-    errors.push(
-      `manifest.class_id: the descriptor's class_id \`${classId}\` must name the item itself (\`${identifier}\`)`,
+    failures.push(
+      manifestFailure(
+        "manifest.class_id",
+        `the descriptor's class_id \`${classId}\` must name the item itself (\`${identifier}\`): the identifier IS the class`,
+      ),
     );
   }
   const parsed = parseFeatureSpecs(manifest);
   if (!parsed.ok) {
-    errors.push(...parsed.errors);
+    failures.push(
+      ...parsed.errors.map((line) => {
+        const at = line.indexOf(": ");
+        return at > 0
+          ? manifestFailure(line.slice(0, at), line.slice(at + 2))
+          : manifestFailure("manifest.features", line);
+      }),
+    );
   } else if (parsed.specs.length === 0) {
-    errors.push("manifest.features: a class descriptor declares at least one feature");
+    failures.push(
+      manifestFailure("manifest.features", "a class descriptor declares at least one feature"),
+    );
   }
   const capabilityClasses = manifest["capability_classes"];
-  if (!Array.isArray(capabilityClasses) || capabilityClasses.length === 0) {
-    errors.push(
-      "manifest.capability_classes: the descriptor states at least one capability class (S0-S3)",
+  if (!Array.isArray(capabilityClasses)) {
+    failures.push(
+      manifestFailure(
+        "manifest.capability_classes",
+        "the descriptor states the capability classes that may carry it",
+      ),
+    );
+  } else if (capabilityClasses.length === 0) {
+    failures.push(
+      manifestFailure(
+        "manifest.capability_classes",
+        "the descriptor states at least one capability class (S0–S3)",
+      ),
     );
   } else {
     capabilityClasses.forEach((token, index) => {
       if (typeof token !== "string" || !CAPABILITY_CLASSES.includes(token)) {
-        errors.push(
-          `manifest.capability_classes[${index}]: \`${String(token)}\` is not a capability class (one of ${CAPABILITY_CLASSES.join(", ")})`,
+        failures.push(
+          manifestFailure(
+            `manifest.capability_classes[${index}]`,
+            `\`${String(token)}\` is not a capability class (one of ${CAPABILITY_CLASSES.join(", ")})`,
+          ),
         );
       }
     });
   }
-  // The rule references' deterministic reading (G4): every
-  // reference resolves to a declared rule, and each expression
-  // parses and reads only declared features with compatible kinds.
+  // The rule references' deterministic reading (G4): every reference
+  // resolves to a declared rule, and each expression parses and reads
+  // only declared features with compatible kinds. Rules absent or
+  // not an array declare none (the native reads them as absent).
   const declaredRules = new Map<string, string>();
   const rules = manifest["rules"];
-  if (rules !== undefined && !Array.isArray(rules)) {
-    errors.push("manifest.rules: the descriptor declares its rules as an array of {id, expr}");
-  } else if (Array.isArray(rules)) {
+  if (Array.isArray(rules)) {
     rules.forEach((rule, index) => {
       const record = rule as Record<string, unknown>;
       const id = typeof record["id"] === "string" ? record["id"].trim() : "";
       const expression = typeof record["expr"] === "string" ? record["expr"] : "";
       if (!id) {
-        errors.push(`manifest.rules[${index}].id: a rule states its id`);
+        failures.push(manifestFailure(`manifest.rules[${index}].id`, "a rule states its id"));
         return;
       }
       if (declaredRules.has(id)) {
-        errors.push(`manifest.rules[${index}].id: the rule id \`${id}\` is declared twice`);
+        failures.push(
+          manifestFailure(`manifest.rules[${index}].id`, `the rule id \`${id}\` is declared twice`),
+        );
       }
       declaredRules.set(id, expression);
       const parsed = parseRule(expression);
       if (!parsed.ok) {
-        errors.push(
-          `manifest.rules[${index}].expr: the expression does not parse: at offset ${parsed.error.offset}, ${parsed.error.message}`,
+        failures.push(
+          manifestFailure(
+            `manifest.rules[${index}].expr`,
+            `the expression does not parse: at offset ${parsed.error.offset}, ${parsed.error.message}`,
+          ),
         );
         return;
       }
@@ -1038,57 +1194,92 @@ export function descriptorManifestErrors(
         for (const spec of specs.specs) kinds.set(spec.path, spec.kind);
       }
       for (const message of ruleDescriptorErrors(parsed.expr, kinds)) {
-        errors.push(`manifest.rules[${index}].expr: ${message}`);
+        failures.push(manifestFailure(`manifest.rules[${index}].expr`, message));
       }
     });
   }
   const ruleReferences = manifest["rule_references"];
   if (!Array.isArray(ruleReferences)) {
-    errors.push(
-      "manifest.rule_references: the descriptor states the rule references it relies on (an empty array declares none)",
+    failures.push(
+      manifestFailure(
+        "manifest.rule_references",
+        "the descriptor states the rule references it relies on (an empty array declares none)",
+      ),
     );
   } else {
     ruleReferences.forEach((token, index) => {
       if (typeof token !== "string" || !token.trim()) {
-        errors.push(`manifest.rule_references[${index}]: a rule reference is a non-empty rule id`);
+        failures.push(
+          manifestFailure(`manifest.rule_references[${index}]`, "a rule reference is a non-empty rule id"),
+        );
         return;
       }
       if (!declaredRules.has(token)) {
-        errors.push(
-          `manifest.rule_references[${index}]: the rule reference \`${token}\` names no rule the descriptor declares in \`rules\``,
+        failures.push(
+          manifestFailure(
+            `manifest.rule_references[${index}]`,
+            `the rule reference \`${token}\` names no rule the descriptor declares in \`rules\``,
+          ),
         );
       }
     });
   }
-  return errors;
+  return failures;
 }
 
-// The instance against its descriptor (point-in-time; the open map
-// rides unvalidated).
 export function instanceErrors(
-  identifier: string,
-  manifest: Record<string, unknown>,
+  manifest: Record<string, unknown> | undefined,
   store: RegistryState,
-): string[] {
+): IntakeFailure[] {
+  if (!manifest) {
+    return [
+      instanceFailure("manifest", "an instance carries a manifest (instance_of, features)"),
+    ];
+  }
   const classId = typeof manifest["instance_of"] === "string" ? manifest["instance_of"].trim() : "";
   if (!classId) {
     return [
-      "manifest.instance_of: the instance states the class it instantiates (the descriptor's identifier)",
+      instanceFailure(
+        "manifest.instance_of",
+        "the instance states the class it instantiates (the descriptor's identifier)",
+      ),
     ];
   }
   const descriptor = store.item(classId);
-  if (!descriptor || descriptor.item_class !== "class-descriptor" || !descriptor.manifest) {
+  if (!descriptor) {
     return [
-      descriptor
-        ? `manifest.instance_of: \`${classId}\` is registered as a ${descriptor.item_class}, not a class descriptor`
-        : `manifest.instance_of: unknown class \`${classId}\`: no registered class descriptor names it`,
+      instanceFailure(
+        "manifest.instance_of",
+        `unknown class \`${classId}\`: no registered class descriptor names it`,
+      ),
+    ];
+  }
+  if (descriptor.item_class !== "class-descriptor") {
+    return [
+      instanceFailure(
+        "manifest.instance_of",
+        `\`${classId}\` is registered as a ${descriptor.item_class}, not a class descriptor`,
+      ),
+    ];
+  }
+  if (!descriptor.manifest) {
+    return [
+      instanceFailure(
+        "manifest.instance_of",
+        `the class descriptor \`${classId}\` carries no manifest`,
+      ),
     ];
   }
   const parsed = parseFeatureSpecs(descriptor.manifest);
   if (!parsed.ok) {
-    return [
-      `manifest.instance_of: the class descriptor \`${classId}\` itself does not parse: ${parsed.errors.join("; ")}`,
-    ];
+    return parsed.errors.map((line) => {
+      const at = line.indexOf(": ");
+      const [path, message] = at > 0 ? [line.slice(0, at), line.slice(at + 2)] : ["", line];
+      return instanceFailure(
+        `manifest.instance_of (${path})`,
+        `the class descriptor \`${classId}\` itself does not parse: ${message}`,
+      );
+    });
   }
   const features = (manifest["features"] ?? {}) as Record<string, unknown>;
   // The referenced rules read deterministically (G4): every
@@ -1103,19 +1294,28 @@ export function instanceErrors(
       if (id) declaredRules.set(id, expression);
     }
   }
-  const errors = instanceAgainstSpecs(classId, parsed.specs, features, store);
+  const failures = instanceAgainstSpecs(classId, parsed.specs, features, store);
   for (const reference of (descriptor.manifest["rule_references"] as string[] | undefined) ?? []) {
     const expression = declaredRules.get(reference);
     if (!expression) continue; // the descriptor intake refuses dangling references
     const parsed = parseRule(expression);
     if (parsed.ok && !evalRule(parsed.expr, features)) {
-      errors.push(
-        `manifest.rule_references.${reference}: the rule \`${reference}\` of the class \`${classId}\` is not satisfied: ${expression}`,
+      failures.push(
+        instanceFailure(
+          `manifest.rule_references.${reference}`,
+          `the rule \`${reference}\` of the class \`${classId}\` is not satisfied: ${expression}`,
+        ),
       );
     }
   }
-  return errors;
+  return failures;
 }
+
+const instanceFailure = (path: string, message: string): IntakeFailure => ({
+  check: "instance-against-class",
+  path,
+  message,
+});
 
 // The pure instance validation (the designer's draft path runs the
 // same rules against an unregistered descriptor's specs). The unit
@@ -1128,8 +1328,8 @@ export function instanceAgainstSpecs(
   features: Record<string, unknown>,
   store: Pick<RegistryState, "item">,
   checkUnits = true,
-): string[] {
-  const errors: string[] = [];
+): IntakeFailure[] {
+  const failures: IntakeFailure[] = [];
   const valueKind = (value: unknown): string | null => {
     if (typeof value === "string") return "string";
     if (typeof value === "boolean") return "boolean";
@@ -1141,24 +1341,33 @@ export function instanceAgainstSpecs(
     const fact = features[spec.path];
     if (fact === undefined || fact === null) {
       if (spec.required) {
-        errors.push(
-          `manifest.features.${spec.path}: the class \`${classId}\` declares \`${spec.path}\` required; the instance states no fact at that path (missing-required)`,
+        failures.push(
+          instanceFailure(
+            `manifest.features.${spec.path}`,
+            `the class \`${classId}\` declares \`${spec.path}\` required; the instance states no fact at that path (missing-required)`,
+          ),
         );
       }
       continue;
     }
     const presented = valueKind(fact);
     if (presented !== spec.kind) {
-      errors.push(
-        `manifest.features.${spec.path}: the fact presents as ${presented ?? "neither string, decimal, boolean nor a list of strings"}; the class \`${classId}\` declares \`${spec.kind}\` (wrong-kind)`,
+      failures.push(
+        instanceFailure(
+          `manifest.features.${spec.path}`,
+          `the fact at \`${spec.path}\` presents as ${presented ?? "neither string, decimal, boolean nor a list of strings"}; the class \`${classId}\` declares \`${spec.kind}\` (wrong-kind)`,
+        ),
       );
       continue;
     }
     if (spec.vocabulary) {
       const member = fact as string;
       if (!spec.vocabulary.includes(member)) {
-        errors.push(
-          `manifest.features.${spec.path}: \`${member}\` is outside the vocabulary the class \`${classId}\` declares (out-of-vocabulary; members: ${spec.vocabulary.join(", ")})`,
+        failures.push(
+          instanceFailure(
+            `manifest.features.${spec.path}`,
+            `\`${member}\` is outside the vocabulary the class \`${classId}\` declares for \`${spec.path}\` (out-of-vocabulary; members: ${spec.vocabulary.join(", ")})`,
+          ),
         );
       }
     }
@@ -1166,13 +1375,23 @@ export function instanceAgainstSpecs(
   for (const spec of specs) {
     if (!spec.unit || !checkUnits) continue;
     const unitItem = store.item(spec.unit);
-    if (!unitItem || unitItem.item_class !== "unit") {
-      errors.push(
-        `manifest.features.${spec.path}: the class \`${classId}\` declares unit \`${spec.unit}\` for \`${spec.path}\`, but no registered unit names it (unresolved-unit)`,
+    if (!unitItem) {
+      failures.push(
+        instanceFailure(
+          `manifest.features.${spec.path}`,
+          `the class \`${classId}\` declares unit \`${spec.unit}\` for \`${spec.path}\`, but no registered unit names it (unresolved-unit)`,
+        ),
+      );
+    } else if (unitItem.item_class !== "unit") {
+      failures.push(
+        instanceFailure(
+          `manifest.features.${spec.path}`,
+          `the class \`${classId}\` declares unit \`${spec.unit}\` for \`${spec.path}\`, but that identifier registers as a ${unitItem.item_class} (unresolved-unit)`,
+        ),
       );
     }
   }
-  return errors;
+  return failures;
 }
 
 // The class descriptor's machine-checkable form in the discovery
@@ -2514,24 +2733,29 @@ export class RegistryDO {
         return badRequest("manifest `version` must be pinned to a registered version of the item");
       }
     }
-    // The class-scoped intake checks (clause 5; R10 B1 + B2 + G7):
-    // the descriptor's signed form and shape, the instance against
-    // its descriptor, the mapping's tier duties. Refusals name the
-    // failing paths.
-    let scoped: string[] = [];
+    // The class-scoped intake chain (clause 5; R10 B1 + B2 + G7),
+    // run in the native order with its first-failing-check semantics:
+    // the descriptor's signed form, then its shape; the instance
+    // against its descriptor; the mapping's tier duties. The refusal
+    // is the native's intake form — the check names the item, the
+    // failures ride beside it.
+    const intake = (failures: IntakeFailure[]): Response => intakeResponse(failures, isoNow());
     if (itemClass === "class-descriptor") {
-      scoped = [
-        ...descriptorSignatureErrors(manifest ?? {}),
-        ...descriptorManifestErrors(identifier, manifest ?? {}),
-      ];
+      const signed = descriptorSignatureErrors(manifest);
+      if (signed.length > 0) return intake(signed);
+      const shaped = descriptorManifestErrors(identifier, manifest ?? {});
+      if (shaped.length > 0) return intake(shaped);
     } else if (itemClass === "instance") {
-      scoped = instanceErrors(identifier, manifest ?? {}, this.state);
+      const against = instanceErrors(manifest, this.state);
+      if (against.length > 0) return intake(against);
     } else if (itemClass === "cross-register-mapping" && manifest?.["kind"] !== undefined) {
       // The clause-15 tier form rides its own duties.
-      scoped = mappingTierErrors(manifest ?? {}, this.state);
-    }
-    if (scoped.length > 0) {
-      return badRequest(scoped.join("; "));
+      const tiered = mappingTierErrors(manifest, this.state);
+      if (tiered.length > 0) return intake(tiered);
+    } else if (itemClass === "profile") {
+      // The profile's signed form (the chain's first profile check).
+      const signed = profileSignatureErrors(manifest);
+      if (signed.length > 0) return intake(signed);
     }
     const item: Item = {
       identifier,
@@ -2636,16 +2860,18 @@ export class RegistryDO {
       }
     }
     if (manifest) {
-      // The same class-scoped checks gate a superseding manifest.
+      // The same class-scoped chain gates a superseding manifest.
       if (item.item_class === "class-descriptor" || item.item_class === "instance") {
-        const scoped = item.item_class === "class-descriptor"
-          ? [
-              ...descriptorSignatureErrors(manifest),
-              ...descriptorManifestErrors(identifier, manifest),
-            ]
-          : instanceErrors(identifier, manifest, this.state);
+        const scoped =
+          item.item_class === "class-descriptor"
+            ? (() => {
+                const signed = descriptorSignatureErrors(manifest);
+                if (signed.length > 0) return signed;
+                return descriptorManifestErrors(identifier, manifest);
+              })()
+            : instanceErrors(manifest, this.state);
         if (scoped.length > 0) {
-          return badRequest(scoped.join("; "));
+          return intakeResponse(scoped, isoNow());
         }
       }
       if (supersedeTierForm) {

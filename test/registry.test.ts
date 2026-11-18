@@ -40,6 +40,12 @@ const createBody = {
   definition: "The S2 Durable Object profile",
   version: "1.0.0",
   submitting_organization: "unidpp-worker",
+  manifest: {
+    version: "1.0.0",
+    issuer_class: "attestation",
+    issuer: "urn:eo:unidpp-worker",
+    signature: { signature: "dGVzdC1zaWduYXR1cmU" },
+  },
 };
 
 describe("the registry Durable Object", () => {
