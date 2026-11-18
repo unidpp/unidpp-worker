@@ -10,14 +10,13 @@
 // the same documents with zero counts); unknown-id reads answer the
 // native error texts verbatim.
 //
-// Two degrade boundaries are stated rather than faked. The responses
-// here are not counter-signed: the estate's Durable Objects serve
+// One degrade boundary is stated rather than faked: the responses
+// here are not counter-signed — the estate's Durable Objects serve
 // unsigned bodies, where the native service signs both suites in the
-// tree-head domain. And the live per-attestation and quorum verdicts
-// render `false`, because the wasm boundary's verify export carries
-// no delegation / master-list-witness / quorum domain tokens — the
-// same explicit-degrade doctrine as the deferred signature suites
-// (a verdict this service cannot compute is never invented).
+// tree-head domain. The live per-attestation and quorum verdicts
+// verify through the wasm boundary's signing domains (the same
+// explicit-degrade doctrine as the deferred signature suites: a
+// verdict this service cannot compute is never invented).
 
 import { journalFor, Journal } from "./journal";
 import { CoreExports } from "./wasm";
