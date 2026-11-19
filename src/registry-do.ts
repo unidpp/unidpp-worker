@@ -1572,26 +1572,43 @@ export function isoNow(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
+// The native rendering: recursively sorted keys, two-space indent —
+// the same document the native estate's serde writer produces, so an
+// adopter diffing the two deployments sees the same bytes.
+const sorted = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(sorted);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([k, v]) => [k, sorted(v)]),
+    );
+  }
+  return value;
+};
+
+const render = (body: unknown): string => JSON.stringify(sorted(body), null, 2);
+
 const badRequest = (error: string): Response =>
-  new Response(JSON.stringify({ error }), {
+  new Response(render({ error }), {
     status: 400,
     headers: { "content-type": "application/json" },
   });
 
 const notFound = (error: string): Response =>
-  new Response(JSON.stringify({ error }), {
+  new Response(render({ error }), {
     status: 404,
     headers: { "content-type": "application/json" },
   });
 
 const conflict = (error: string): Response =>
-  new Response(JSON.stringify({ error }), {
+  new Response(render({ error }), {
     status: 409,
     headers: { "content-type": "application/json" },
   });
 
 const stamped = (status: number, body: unknown, asOf: string): Response =>
-  new Response(JSON.stringify(body), {
+  new Response(render(body), {
     status,
     headers: { "content-type": "application/json", "x-as-of": asOf },
   });
@@ -1602,7 +1619,7 @@ const stampedWith = (
   contentType: string,
   asOf: string,
 ): Response =>
-  new Response(JSON.stringify(body), {
+  new Response(render(body), {
     status,
     headers: { "content-type": contentType, "x-as-of": asOf },
   });
@@ -2256,7 +2273,7 @@ export class RegistryDO {
       }, isoNow());
     }
     if (path === "/healthz") {
-      return new Response(JSON.stringify({ status: "ok" }), {
+      return new Response(render({ status: "ok" }), {
         headers: { "content-type": "application/json" },
       });
     }
