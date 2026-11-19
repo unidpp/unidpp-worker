@@ -31,6 +31,7 @@ import {
   bytesHex,
   hexBytes,
 } from "./s13";
+import { renderNative } from "./native-render";
 
 interface SignatureSlotDoc {
   suite: string;
@@ -77,19 +78,19 @@ interface PolicyRecord {
 }
 
 const badRequest = (error: string): Response =>
-  new Response(JSON.stringify({ error }), {
+  new Response(renderNative({ error }), {
     status: 400,
     headers: { "content-type": "application/json" },
   });
 
 const refused = (error: string): Response =>
-  new Response(JSON.stringify({ error }), {
+  new Response(renderNative({ error }), {
     status: 403,
     headers: { "content-type": "application/json" },
   });
 
 const stamped = (status: number, body: unknown): Response =>
-  new Response(JSON.stringify(body), {
+  new Response(renderNative(body), {
     status,
     headers: {
       "content-type": "application/json",

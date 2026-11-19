@@ -12,6 +12,7 @@
 // router forwards (POST /relay/relay/verify).
 
 import { workerCore } from "./mount";
+import { renderNative } from "./native-render";
 
 const hex = (bytes: Uint8Array): string => {
   let out = "";
@@ -34,13 +35,13 @@ const stampHeaders = (): Record<string, string> => ({
 });
 
 const badRequest = (error: string): Response =>
-  new Response(JSON.stringify({ error }, null, 2), {
+  new Response(renderNative({ error }), {
     status: 400,
     headers: stampHeaders(),
   });
 
 const json = (status: number, body: unknown): Response =>
-  new Response(JSON.stringify(body, null, 2), {
+  new Response(renderNative(body), {
     status,
     headers: stampHeaders(),
   });

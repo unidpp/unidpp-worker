@@ -11,6 +11,7 @@ import { JournalOp, journalFor, Journal } from "./journal";
 import { CoreExports } from "./wasm";
 import { workerCore } from "./mount";
 import { MerkleTree, ProofNode } from "./tree";
+import { renderNative } from "./native-render";
 
 export interface CommitRecord {
   seq: number;
@@ -24,13 +25,13 @@ const hexOk = (value: string): boolean =>
   /^[0-9a-fA-F]{64}$/.test(value);
 
 const badRequest = (error: string): Response =>
-  new Response(JSON.stringify({ error }), {
+  new Response(renderNative({ error }), {
     status: 400,
     headers: { "content-type": "application/json" },
   });
 
 const json = (status: number, body: unknown, asOf?: string): Response =>
-  new Response(JSON.stringify(body), {
+  new Response(renderNative(body), {
     status,
     headers: {
       "content-type": "application/json",

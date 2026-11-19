@@ -7,6 +7,7 @@
 import { journalFor, Journal, JournalOp } from "./journal";
 import { CoreExports } from "./wasm";
 import { workerCore } from "./mount";
+import { renderNative } from "./native-render";
 
 export interface PassportRecord {
   document: Record<string, unknown>;
@@ -53,7 +54,7 @@ const badRequest = (error: string): Response =>
   stamped(400, { error });
 
 const stamped = (status: number, body: Record<string, unknown>): Response =>
-  new Response(JSON.stringify({ as_of: isoNow(), ...body }), {
+  new Response(renderNative({ as_of: isoNow(), ...body }), {
     status,
     headers: {
       "content-type": "application/json",
@@ -64,7 +65,9 @@ const stamped = (status: number, body: Record<string, unknown>): Response =>
 // The no-information 404 (I12): byte-identical for every unknown
 // passport, no as-of body field.
 const notFound = (): Response =>
-  new Response(JSON.stringify({ error: "not found" }), {
+  // The no-information 404 (I12): the frozen compact bytes the native
+// pins as a constant — never re-rendered.
+new Response('{"error":"not found"}', {
     status: 404,
     headers: {
       "content-type": "application/json",
@@ -405,7 +408,7 @@ export class IssuerDO {
       return badRequest("invalid JSON body");
     }
     const record = this.passports.get(passportId);
-    if (!record) return stamped(404, { error: `no passport \`${passportId}\`` });
+    if (!record) return notFound();
     // The seal boundary: the native intake — the typed construction,
     // the transition checks, the hash-chained append into the
     // passport's log, the ArtifactEvent signature under the event
@@ -449,7 +452,7 @@ export class IssuerDO {
 
   private async mintPack(request: Request, passportId: string): Promise<Response> {
     const record = this.passports.get(passportId);
-    if (!record) return stamped(404, { error: `no passport \`${passportId}\`` });
+    if (!record) return notFound();
     let v: Record<string, unknown> = {};
     try {
       const text = await request.text();
@@ -470,7 +473,7 @@ export class IssuerDO {
 
   private getOne(passportId: string): Response {
     const record = this.passports.get(passportId);
-    if (!record) return stamped(404, { error: `no passport \`${passportId}\`` });
+    if (!record) return notFound();
     return stamped(200, {
       ...record.document,
       audit_seq: record.audit_seq,
