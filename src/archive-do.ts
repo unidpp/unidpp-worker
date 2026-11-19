@@ -7,6 +7,7 @@
 
 import { journalFor, Journal } from "./journal";
 import { workerCore } from "./mount";
+import { renderNative } from "./native-render";
 
 export interface Bucket {
   put(key: string, value: string): Promise<unknown>;
@@ -27,13 +28,13 @@ const sha256Hex = (core: ReturnType<typeof workerCore>, data: Uint8Array): strin
 };
 
 const badRequest = (error: string): Response =>
-  new Response(JSON.stringify({ error }), {
+  new Response(renderNative({ error }), {
     status: 400,
     headers: { "content-type": "application/json" },
   });
 
 const stamped = (status: number, body: unknown): Response =>
-  new Response(JSON.stringify(body), {
+  new Response(renderNative(body), {
     status,
     headers: {
       "content-type": "application/json",

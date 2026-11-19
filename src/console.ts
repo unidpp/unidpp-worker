@@ -8,6 +8,7 @@
 // deployment serves open (the native console's own doctrine).
 
 import { workerCore } from "./mount";
+import { renderNative } from "./native-render";
 
 export interface DoNamespace {
   idFromName(name: string): { toString(): string };
@@ -102,7 +103,7 @@ const htmlResponse = (body: string, status = 200): Response =>
   });
 
 const jsonResponse = (body: unknown, status = 200): Response =>
-  new Response(JSON.stringify(body), {
+  new Response(renderNative(body), {
     status,
     headers: { "content-type": "application/json" },
   });

@@ -21,6 +21,7 @@
 import { journalFor, Journal } from "./journal";
 import { CoreExports } from "./wasm";
 import { workerCore } from "./mount";
+import { sortedValue as sorted } from "./native-render";
 
 interface Anchor {
   key_id: string;
@@ -823,18 +824,6 @@ const trustEntryParse = (v: unknown): { entry: StoredTrustEntry } | { error: str
 // native documents render with recursively sorted object keys and a
 // two-space indent. Responses mirror that rendering.
 // ---------------------------------------------------------------------------
-
-const sorted = (value: unknown): unknown => {
-  if (Array.isArray(value)) return value.map(sorted);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-        .map(([k, v]) => [k, sorted(v)]),
-    );
-  }
-  return value;
-};
 
 const CACHE_CURRENT = "public, max-age=30, must-revalidate";
 const CACHE_POINT_IN_TIME = "public, max-age=86400, immutable";

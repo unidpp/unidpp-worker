@@ -8,6 +8,7 @@
 import { JournalOp, journalFor, Journal } from "./journal";
 import { CoreExports } from "./wasm";
 import { workerCore } from "./mount";
+import { renderNative } from "./native-render";
 
 export interface Credential {
   id: string;
@@ -50,7 +51,7 @@ const slug = (): string => {
 };
 
 const json = (status: number, body: unknown, asOf?: string): Response =>
-  new Response(JSON.stringify(body), {
+  new Response(renderNative(body), {
     status,
     headers: {
       "content-type": "application/json",

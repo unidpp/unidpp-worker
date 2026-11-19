@@ -347,7 +347,8 @@ describe("the /views/render surface", () => {
       {},
     );
     expect(noPassport.status).toBe(404);
-    expect(((await noPassport.json()) as Record<string, unknown>).error).toBe("no passport `absent`");
+    // The native's frozen no-information body (I12).
+    expect(((await noPassport.json()) as Record<string, unknown>).error).toBe("not found");
   });
 });
 

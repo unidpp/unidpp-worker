@@ -56,6 +56,9 @@ const CLASS_PLURALS: Record<string, string> = {
 
 import { evalRule, parseRule, ruleDescriptorErrors } from "./rules";
 import { SqlJournal, MapJournal, type Journal, type JournalOp } from "./journal";
+import { renderNative } from "./native-render";
+
+const render = (body: unknown): string => renderNative(body);
 export type { JournalOp };
 
 // ---------------------------------------------------------------------------
@@ -1572,22 +1575,7 @@ export function isoNow(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-// The native rendering: recursively sorted keys, two-space indent —
-// the same document the native estate's serde writer produces, so an
-// adopter diffing the two deployments sees the same bytes.
-const sorted = (value: unknown): unknown => {
-  if (Array.isArray(value)) return value.map(sorted);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-        .map(([k, v]) => [k, sorted(v)]),
-    );
-  }
-  return value;
-};
 
-const render = (body: unknown): string => JSON.stringify(sorted(body), null, 2);
 
 const badRequest = (error: string): Response =>
   new Response(render({ error }), {

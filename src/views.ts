@@ -23,6 +23,13 @@ const badRequest = (error: string): Response =>
 
 const asOfNow = (): string => new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 
+// The frozen no-information 404 (I12): the native's constant bytes.
+const stampedFrozenNotFound = (): Response =>
+  new Response('{"error":"not found"}', {
+    status: 404,
+    headers: { "content-type": "application/json" },
+  });
+
 const stamped = (status: number, body: unknown): Response =>
   new Response(JSON.stringify(body), {
     status,
@@ -108,7 +115,7 @@ async function loadPassport(
   if (rc !== 0 || passportId !== demo?.passport_id) {
     return {
       ok: false,
-      response: stamped(404, { error: `no passport \`${passportId}\`` }),
+      response: stampedFrozenNotFound(),
     };
   }
   return { ok: true, text: note, fromFixtures: true };
