@@ -356,7 +356,7 @@ export async function resolveQuery(request: Request, env: ResolverEnv): Promise<
   if (ident.scheme === "passport") {
     const passportId = ident.key;
     const found = passports.some((p) => p.passportId === passportId);
-    if (!found) return jsonResponse({}, 404);
+    if (!found) return FROZEN_NOT_FOUND();
     return jsonResponse(linksetDocument({ scheme: "cpid", key: passportId }, passportId, origin));
   }
   for (const entry of passports) {
@@ -365,7 +365,7 @@ export async function resolveQuery(request: Request, env: ResolverEnv): Promise<
     }
   }
   // The no-information 404: unknown and dark answer identically (I12).
-  return jsonResponse({}, 404);
+  return FROZEN_NOT_FOUND();
 }
 
 /** The GS1-conventions path form: `/{01}/{gtin}/...` → 303 to the
@@ -378,7 +378,7 @@ export async function resolvePath(
   const wantLinkset = segments[segments.length - 1] === "linkset";
   const keyPath = wantLinkset ? segments.slice(0, -1) : segments;
   const ident = parseIdentifier("", keyPath);
-  if (!ident) return jsonResponse({}, 404);
+  if (!ident) return FROZEN_NOT_FOUND();
   const origin = env.RESOLVER_ORIGIN ?? "https://app.unidpp.org";
   const passports = await estatePassports(env);
   for (const entry of passports) {
@@ -390,8 +390,17 @@ export async function resolvePath(
       return new Response("", { status: 303, headers: { location: defaultHref } });
     }
   }
-  return jsonResponse({}, 404);
+  return FROZEN_NOT_FOUND();
 }
+
+// The no-information 404 (I12): unknown and dark answer the frozen
+// bytes the native resolver pins as its constant — byte-identical
+// between the probes, and byte-identical with the native estate.
+const FROZEN_NOT_FOUND = (): Response =>
+  new Response('{"error":"not found"}', {
+    status: 404,
+    headers: { "content-type": "application/json" },
+  });
 
 const jsonResponse = (
   body: unknown,
