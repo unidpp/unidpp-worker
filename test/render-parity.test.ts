@@ -498,3 +498,116 @@ describe("the relay verification", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// The import direction (POST /untp/ingest): the boundary's unidpp_ingest
+// export wraps the native gateway's ingest.rs included by path; the
+// store is module state. Parity: the deterministic id, the identity,
+// the granularity, the profile bindings and the receipt's commitment
+// agree with the native one-binary on the same body (the cross-check
+// values pinned below were produced by the native ingest route).
+// ---------------------------------------------------------------------------
+
+describe("the import direction", () => {
+  const triad = (): string =>
+    JSON.stringify({
+      passport: {
+        "@context": "https://www.w3.org/ns/credentials/v2",
+        type: "DigitalProductPassport",
+        id: "https://render.test/passport/roundtrip",
+        productIdentifiers: [
+          { scheme: "https://gs1.org/voc/", value: "04012345123456" },
+        ],
+        passportIssuer: { id: "urn:eo:render-test" },
+        validFrom: "2026-01-01T00:00:00Z",
+      },
+      conformity: [
+        {
+          credentialSubject: {
+            conformity: {
+              standard: "urn:unidpp:profile:eu-espr-electronics",
+              version: "1.0",
+            },
+          },
+          validFrom: "2026-02-01T00:00:00Z",
+        },
+      ],
+      link: { target: "https://resolve.unidpp.org/r/roundtrip" },
+    });
+
+  it("imports a UNTP triad with the deterministic identity and matches on re-import", async () => {
+    const first = await post("/untp/ingest", triad());
+    expect(first.status).toBe(201);
+    const imported = (await first.json()) as {
+      status?: string;
+      passport_id?: string;
+      identity?: string;
+      granularity?: string;
+      profiles?: { id?: string; version?: string; effective_from?: string }[];
+      receipt?: { commitment?: string; source?: { regime?: string } };
+    };
+    // The native one-binary's own answer for this body (cross-checked).
+    expect(imported.passport_id).toBe("urn:unidpp:passport:untp-13615cabb407");
+    expect(imported.status).toBe("imported");
+    expect(imported.identity).toBe("01+04012345123456");
+    expect(imported.granularity).toBe("model");
+    expect(imported.profiles?.[0]?.id).toBe("urn:unidpp:profile:eu-espr-electronics");
+    expect(imported.profiles?.[0]?.effective_from).toBe("2026-02-01T00:00:00Z");
+    expect(imported.receipt?.source?.regime).toBe("untp");
+    expect(imported.receipt?.commitment).toMatch(/^[0-9a-f]{64}$/);
+
+    const second = await post("/untp/ingest", triad());
+    expect(second.status).toBe(200);
+    const matched = (await second.json()) as { status?: string; passport_id?: string };
+    expect(matched.status).toBe("matched");
+    expect(matched.passport_id).toBe(imported.passport_id);
+
+    // The ingested passport resolves on the render direction (after
+    // the issuer and the fixture, the native resolution order).
+    const rendered = await get(`/untp/product/${encodeURIComponent(imported.passport_id ?? "")}`);
+    expect(rendered.status).toBe(200);
+    const body = (await rendered.json()) as { rendering?: { source?: string } };
+    expect(body.rendering?.source).toBe("fixture");
+    expect(JSON.stringify(body)).toContain("04012345123456");
+  });
+
+  it("degrades explicitly on an unmapped scheme and a body with no passport VC", async () => {
+    const unmapped = await post(
+      "/untp/ingest",
+      JSON.stringify({
+        passport: {
+          productIdentifiers: [
+            { scheme: "https://example.org/unknown/", value: "X" },
+          ],
+        },
+      }),
+    );
+    expect(unmapped.status).toBe(422);
+    const degraded = (await unmapped.json()) as { status?: string; reason?: string };
+    expect(degraded.status).toBe("degraded");
+    expect(degraded.reason).toContain("no C8 mapping");
+    expect(degraded.reason).toContain("nothing is minted under a guessed scheme");
+
+    const noVc = await post("/untp/ingest", '{"x":1}');
+    expect(noVc.status).toBe(422);
+    expect(((await noVc.json()) as { reason?: string }).reason).toContain(
+      "no UNTP passport VC found",
+    );
+  });
+
+  it("answers the wrong method with the native 405", async () => {
+    const served = await get("/untp/ingest");
+    expect(served.status).toBe(405);
+    expect(served.headers.get("allow")).toBe("POST");
+    await expect(served.text()).resolves.toBe("");
+  });
+
+  it("answers the render routes' wrong methods with the native 405", async () => {
+    for (const path of ["/untp/product/x", "/en18222/v1/dppsByProductId/04012345123456"]) {
+      const served = await post(path, "{}");
+      expect(served.status).toBe(405);
+      expect(served.headers.get("allow")).toBe("GET,HEAD");
+      await expect(served.text()).resolves.toBe("");
+    }
+  });
+});

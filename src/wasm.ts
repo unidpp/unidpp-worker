@@ -136,6 +136,7 @@ export interface CoreExports {
     originLen: number,
     nowSecs: bigint,
   ) => number;
+  unidpp_ingest: (body: number, bodyLen: number, nowSecs: bigint) => number;
   unidpp_hub_relay: (
     hubId: number,
     hubIdLen: number,

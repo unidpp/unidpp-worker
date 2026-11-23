@@ -569,6 +569,8 @@ pub mod twin;
 pub mod canonical;
 #[path = "../../../../unidpp-gateway/src/en18222.rs"]
 pub mod en18222;
+#[path = "../../../../unidpp-gateway/src/ingest.rs"]
+pub mod ingest;
 pub mod source;
 #[path = "../../../../unidpp-gateway/src/untp.rs"]
 pub mod untp;
@@ -880,6 +882,125 @@ pub unsafe extern "C" fn unidpp_render(
         }
     };
     outcome
+}
+
+/// The UNTP ingest boundary (the S12 seam's import direction): the
+/// native gateway's ingest logic — THE SAME SOURCE the native gateway
+/// compiles (included by path) — wrapped as a single-call outcome.
+/// The stub extracted from any accepted body shape, the subject
+/// identity parsed under the render direction's scheme rules (an
+/// unmapped scheme degrades explicitly), the deterministic passport
+/// id derived and the passport minted, the receipt composed. The
+/// outcome rides the note buffer; a negative code carries the
+/// degradation reason. The store is the caller's (module state on
+/// the edge): idempotency keys on the returned passport_id, the
+/// `matched` answer served from the stored outcome.
+///
+/// # Safety
+/// `body_ptr` names readable JSON of the stated length.
+#[no_mangle]
+pub unsafe extern "C" fn unidpp_ingest(body_ptr: *const u8, body_len: usize, now_secs: i64) -> i32 {
+    use unidpp_cli::passport::{MintOptions, Passport};
+    let body_text =
+        String::from_utf8_lossy(std::slice::from_raw_parts(body_ptr, body_len)).into_owned();
+    std::panic::set_hook(Box::new(|info| {
+        let message = format!("{info}");
+        unsafe {
+            DEBUG_TEXT = Some(format!("ingest panic: {message}"));
+        }
+    }));
+    let outcome = std::panic::catch_unwind(move || -> Result<serde_json::Value, String> {
+        let body: serde_json::Value =
+            serde_json::from_str(&body_text).map_err(|e| format!("invalid JSON body: {e}"))?;
+        let stub = ingest::extract_stub(&body)?;
+        let conformity = ingest::extract_conformity(&body);
+        let link = body.get("link");
+        let (identity, warnings) = ingest::parse_identity(stub)?;
+        let passport_id = ingest::derived_passport_id(&identity);
+        let bindings = ingest::conformity_bindings(&conformity);
+        let eo_id = stub
+            .get("passportIssuer")
+            .and_then(|i| i.get("id"))
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("urn:unidpp:import:untp")
+            .to_string();
+        let resolver_uri = link
+            .and_then(|l| l.get("target"))
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let valid_from = stub
+            .get("validFrom")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|s| unidpp_model::Timestamp::parse(s).ok());
+        let valid_to = stub
+            .get("validUntil")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|s| unidpp_model::Timestamp::parse(s).ok());
+        let at = if now_secs > 0 {
+            unidpp_model::Timestamp {
+                secs: now_secs,
+                nanos: 0,
+            }
+        } else {
+            unidpp_model::Timestamp::now()
+        };
+        let document = Passport::mint_at(
+            MintOptions {
+                id: identity.to_string(),
+                granularity: None,
+                type_ref: None,
+                capability: "S1".to_string(),
+                eo_id: Some(eo_id),
+                resolver_uri,
+                passport_id: Some(passport_id.clone()),
+                valid_from,
+                valid_to,
+            },
+            at,
+        )
+        .map_err(|e| format!("mint failed for the imported identity: {e}"))?;
+        let receipt = serde_json::json!({
+            "passport_id": passport_id,
+            "source": {
+                "regime": "untp",
+                "stub_id": stub.get("id").and_then(serde_json::Value::as_str),
+                "identifier_scheme": ingest::scheme_uri_of(stub),
+                "imported_at": at.to_string(),
+            },
+            "conformity_credentials": conformity.len(),
+            "profile_bindings": bindings.len(),
+            "warnings": warnings,
+            "commitment": unidpp_model::sha256(&[
+                serde_json::to_string(stub).map_err(|e| e.to_string())?.as_bytes()
+            ])
+            .hex(),
+        });
+        let profiles = bindings
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "id": p.id,
+                    "version": p.version,
+                    "effective_from": p.effective_from.map(|t| t.to_string()),
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(serde_json::json!({
+            "passport_id": document.passport_id.as_str(),
+            "identity": document.product_id.to_string(),
+            "granularity": document.product_id.granularity.to_string(),
+            "passport": serde_json::to_value(&document).map_err(|e| e.to_string())?,
+            "profiles": profiles,
+            "receipt": receipt,
+        }))
+    });
+    match outcome {
+        Ok(Ok(value)) => canonical_note(value),
+        Ok(Err(reason)) => parse_error("ingest degraded", reason),
+        Err(_) => parse_error("ingest panicked", "no message captured".to_string()),
+    }
 }
 
 /// Validate a clause-15 mapping item and return its canonical form:
