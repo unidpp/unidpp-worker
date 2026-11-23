@@ -324,6 +324,30 @@ function renderBoundary(
   return { ok: false, error: note || `the render failed (${rc})` };
 }
 
+// The ingest outcome (the boundary's single-call logic), stored by
+// passport id — the native IngestStore's entries + receipts, keyed
+// the same way.
+interface IngestedEntry {
+  passport: string;
+  profiles: { id: string; version: string; effective_from?: string }[];
+  receipt: Record<string, unknown>;
+}
+
+const ingestedEntries = new Map<string, IngestedEntry>();
+
+function ingestBoundary(
+  bodyText: string,
+  atSecs: number,
+): { ok: true; outcome: Record<string, unknown> } | { ok: false; error: string } {
+  const core = workerCore();
+  const part = putBytes(core, bodyText);
+  const rc = core.unidpp_ingest(part.ptr, part.len, BigInt(Math.floor(atSecs)));
+  const note = takeNote(core);
+  core.unidpp_free(part.ptr, 0);
+  if (rc === 0) return { ok: true, outcome: JSON.parse(note) as Record<string, unknown> };
+  return { ok: false, error: note || `the ingest failed (${rc})` };
+}
+
 // The issuer's passport document (the audit sequence stripped), or
 // null on a miss. The bound profile layer (clause 5) rides beside
 // the document and returns separately for the render's profile
@@ -399,6 +423,9 @@ export async function render(
   // GET /en18222/v1/dppsByProductId/{gtin}?representation=full|compressed
   const en = pathname.match(/^\/en18222\/v1\/dppsByProductId\/([^/]+)$/);
   if (en) {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return methodNotAllowed("GET,HEAD");
+    }
     const gate = scanAdmit(scanPolicyOf(env), request);
     if (gate) return scanRefusal(gate, false);
     const gtin = decodeURIComponent(en[1]);
@@ -427,6 +454,9 @@ export async function render(
   // GET /untp/product/{id}?freshness=PnDTnHnMnS
   const untp = pathname.match(/^\/untp\/product\/([^/]+)$/);
   if (untp) {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return methodNotAllowed("GET,HEAD");
+    }
     const gate = scanAdmit(scanPolicyOf(env), request);
     if (gate) return scanRefusal(gate, false);
     const id = decodeURIComponent(untp[1]);
@@ -434,6 +464,8 @@ export async function render(
     if (freshness && durationMs(freshness) === null) {
       return stamped(400, JSON.stringify({ error: "`freshness` must be an ISO 8601 duration (PnDTnHnMnS)" }), asOf);
     }
+    // The native resolution order: the issuer upstream, then the
+    // fixture, then the ingested store.
     let found = await issuerPassport(env, id);
     let origin = "issuer";
     let profiles: { id: string; version: string; effective_from?: string }[] = [];
@@ -444,6 +476,13 @@ export async function render(
         : null;
       if (fixture && fixtureId === id) {
         found = { document: fixture, profiles: [] };
+        origin = "fixture";
+      }
+    }
+    if (!found) {
+      const ingested = ingestedEntries.get(id);
+      if (ingested) {
+        found = { document: ingested.passport, profiles: ingested.profiles };
         origin = "fixture";
       }
     }
@@ -459,6 +498,73 @@ export async function render(
     );
     if (!minted.ok) return stamped(502, JSON.stringify({ error: minted.error }), asOf);
     return stamped(200, minted.document, asOf);
+  }
+
+  // POST /untp/ingest — the import direction: a UNTP passport VC
+  // (bare, or wrapped in the triad this gateway itself renders) mints
+  // a core passport with a deterministic identity through the
+  // boundary; conformity credentials land as profile bindings.
+  // Idempotent per subject identity; the store is isolate state.
+  if (pathname === "/untp/ingest") {
+    if (request.method !== "POST") return methodNotAllowed("POST");
+    const bodyText = await request.text();
+    const outcome = ingestBoundary(bodyText, atSecs);
+    if (!outcome.ok) {
+      return stamped(
+        422,
+        JSON.stringify({ status: "degraded", reason: outcome.error }),
+        asOf,
+      );
+    }
+    const o = outcome.outcome;
+    const passportId = o.passport_id as string;
+    const existing = ingestedEntries.get(passportId);
+    if (existing) {
+      return stamped(
+        200,
+        JSON.stringify({
+          status: "matched",
+          passport_id: passportId,
+          identity: o.identity,
+          granularity: o.granularity,
+          profiles: existing.profiles.map((profile) => ({
+            id: profile.id,
+            version: profile.version,
+            effective_from: profile.effective_from ?? null,
+          })),
+          receipt: existing.receipt,
+        }),
+        asOf,
+      );
+    }
+    const entry: IngestedEntry = {
+      passport: JSON.stringify(o.passport),
+      profiles: (o.profiles as { id: string; version: string; effective_from?: string }[]).map(
+        (profile) => ({
+          id: profile.id,
+          version: profile.version,
+          ...(profile.effective_from ? { effective_from: profile.effective_from } : {}),
+        }),
+      ),
+      receipt: o.receipt as Record<string, unknown>,
+    };
+    ingestedEntries.set(passportId, entry);
+    return stamped(
+      201,
+      JSON.stringify({
+        status: "imported",
+        passport_id: passportId,
+        identity: o.identity,
+        granularity: o.granularity,
+        profiles: entry.profiles.map((profile) => ({
+          id: profile.id,
+          version: profile.version,
+          effective_from: profile.effective_from ?? null,
+        })),
+        receipt: entry.receipt,
+      }),
+      asOf,
+    );
   }
 
   // POST /feedback — the consumer report channel: typed, journaled,

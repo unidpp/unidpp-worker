@@ -47,3 +47,17 @@ pub struct GatewayPassport {
     /// whose documents carry no event signatures).
     pub anchors: HashMap<String, PublicKeyMaterial>,
 }
+
+impl GatewayPassport {
+    /// The native carrier's fixture constructor: fixture origin, no
+    /// anchors — the shape the ingest store and the fixture source
+    /// build.
+    pub fn fixture(document: Passport, profiles: Vec<ProfileRef>) -> GatewayPassport {
+        GatewayPassport {
+            document,
+            profiles,
+            origin: Origin::Fixture,
+            anchors: HashMap::new(),
+        }
+    }
+}
