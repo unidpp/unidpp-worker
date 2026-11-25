@@ -611,3 +611,17 @@ describe("the import direction", () => {
     }
   });
 });
+
+describe("the router fallback", () => {
+  it("answers unknown paths with the axum default: an empty 404", async () => {
+    const served = await get("/nonexistent");
+    expect(served.status).toBe(404);
+    await expect(served.text()).resolves.toBe("");
+  });
+
+  it("answers unknown subpaths under the mounted verbs the same way", async () => {
+    const served = await get("/untp/nonexistent");
+    expect(served.status).toBe(404);
+    await expect(served.text()).resolves.toBe("");
+  });
+});
