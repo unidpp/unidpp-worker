@@ -704,7 +704,10 @@ export async function render(
     return scanRefusal(issued.reason, true);
   }
 
-  return stamped(404, JSON.stringify({ error: "no such render route" }), asOf);
+  // The axum router default: unknown paths answer an empty 404 — no
+  // body, no content-type, no as-of stamp (the native gateway mounts
+  // no custom fallback; its router default is exactly this).
+  return new Response(null, { status: 404 });
 }
 
 // ---------------------------------------------------------------------------
