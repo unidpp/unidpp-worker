@@ -1073,6 +1073,19 @@ describe("the trust Durable Object's parity surface", () => {
     ).json()) as { verified: boolean; log_id: string };
     expect(verdict.verified).toBe(false);
     expect(verdict.log_id).toBe("unidpp-log");
-    expect((await get(trust, "/healthz")).status).toBe(200);
+    const health = await get(trust, "/healthz");
+    expect(health.status).toBe(200);
+    // The native trust's healthz: the service and the instant in the
+    // body, signed like every trust answer.
+    expect(health.headers.get("x-sig-domain")).toBe("tree-head");
+    expect(health.headers.get("x-sig-ed25519")).toBeTruthy();
+    const healthBody = (await health.json()) as {
+      status?: string;
+      service?: string;
+      as_of?: string;
+    };
+    expect(healthBody.status).toBe("ok");
+    expect(healthBody.service).toBe("unidpp-trust");
+    expect(healthBody.as_of).toBeTruthy();
   });
 });

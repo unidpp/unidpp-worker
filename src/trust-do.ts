@@ -1037,9 +1037,22 @@ export class TrustDO {
     const path = url.pathname;
     const method = request.method;
     if (path === "/healthz") {
-      return new Response(JSON.stringify({ status: "ok" }), {
-        headers: { "content-type": "application/json" },
-      });
+      // The native trust's healthz: the status, the service and the
+      // instant in the body — signed like every trust answer.
+      return new Response(
+        JSON.stringify(
+          sorted({
+            status: "ok",
+            service: "unidpp-trust",
+            as_of: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+          }),
+          null,
+          2,
+        ),
+        {
+          headers: { "content-type": "application/json" },
+        },
+      );
     }
     // Every routed path answers 405 on a method it does not carry
     // (the native router's contract probe posture).

@@ -152,7 +152,17 @@ export class ArchiveDO {
     }
     const url = new URL(request.url);
     const path = url.pathname;
-    if (path === "/healthz") return stamped(200, { status: "ok" });
+    if (path === "/healthz") {
+      // The native archive's healthz: the status, the service, the
+      // snapshot count, the anchoring posture and the instant.
+      return stamped(200, {
+        status: "ok",
+        service: "unidpp-archive",
+        snapshots: this.index.length,
+        anchoring_enabled: Boolean(this.env.LOG),
+        as_of: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+      });
+    }
     if (path === "/" && request.method === "GET") return this.discovery();
     if (path === "/keyring" && request.method === "GET") return this.keyringDocument();
     if (path === "/admin/log" && request.method === "GET") return this.adminLog(request);

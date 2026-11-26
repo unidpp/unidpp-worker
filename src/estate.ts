@@ -70,6 +70,51 @@ const json = (body: unknown): Response =>
     headers: { "content-type": "application/json" },
   });
 
+const stamp = (): string => new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+
+// The module health surfaces render their natives' forms (the parity
+// doctrine: the edge renders what the native module renders). The
+// gateway, issuer, registry and projector answer plain `ok` in
+// text/plain with the as-of stamp; the log omits the stamp; the
+// resolver answers bare, no headers at all; the identity service
+// answers its JSON status stamped; the hub answers its pretty JSON
+// status stamped; the console is the estate's own surface. Trust and
+// archive health ride their Durable Objects (their delegation
+// regexes above carry `healthz`), whose forms the DOs serve signed
+// and counted.
+function moduleHealth(name: string): Response {
+  const asOf = stamp();
+  switch (name) {
+    case "registry":
+    case "issuer":
+    case "views":
+    case "render":
+      return new Response("ok", {
+        status: 200,
+        headers: { "content-type": "text/plain", "x-as-of": asOf },
+      });
+    case "log":
+      return new Response("ok", {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      });
+    case "resolver":
+      return new Response("ok", { status: 200 });
+    case "identity":
+      return new Response(JSON.stringify({ status: "ok" }), {
+        status: 200,
+        headers: { "content-type": "application/json", "x-as-of": asOf },
+      });
+    case "relay":
+      return new Response(JSON.stringify({ status: "ok" }, null, 2), {
+        status: 200,
+        headers: { "content-type": "application/json", "x-as-of": asOf },
+      });
+    default:
+      return json({ status: "ok" });
+  }
+}
+
 // The wasm core, mounted at startup: workerd provides the
 // CompiledWasm import (an instantiated pure module) and tests provide
 // their own instance of the same bytes.
@@ -270,9 +315,10 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
     });
   }
   // The contract and the health probe: the module loop's answers,
-  // stated here because the resolver's own routes run first.
+  // stated here because the resolver's own routes run first. The
+  // native resolver answers bare `ok`, no headers at all.
   if (pathname === "/resolver/healthz") {
-    return json({ status: "ok" });
+    return new Response("ok", { status: 200 });
   }
   if (pathname === "/resolver/openapi.yaml") {
     return yaml(resolverGolden);
@@ -333,7 +379,7 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
     return stub!.fetch(new Request(inner.toString(), request));
   }
   const archiveRest = pathname.startsWith("/archive/") ? pathname.slice("/archive".length) : null;
-  const archiveData = archiveRest?.match(/^\/(snapshots|admin|keyring)($|\/)/);
+  const archiveData = archiveRest?.match(/^\/(snapshots|admin|keyring|healthz)($|\/)/);
   if (archiveRest && archiveData) {
     if (!env?.ARCHIVE) {
       return new Response(
@@ -347,7 +393,7 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
     return stub!.fetch(new Request(inner.toString(), request));
   }
   const trustRest = pathname.startsWith("/trust/") ? pathname.slice("/trust".length) : null;
-  const trustData = trustRest?.match(/^\/(keyring|verify|graph|anchors|admin|anchor-bundle|edges|evidence|master-list|nodes|operators|revocations|trust-lists)($|\/)/);
+  const trustData = trustRest?.match(/^\/(keyring|verify|graph|anchors|admin|anchor-bundle|edges|evidence|master-list|nodes|operators|revocations|trust-lists|healthz)($|\/)/);
   if (trustRest && trustData) {
     if (!env?.TRUST) {
       return new Response(
@@ -404,7 +450,7 @@ export async function handle(request: Request, env?: Env): Promise<Response> {
         const prefix = `/${name}/`;
         if (pathname.startsWith(prefix)) {
           const rest = pathname.slice(prefix.length);
-          if (rest === "healthz") return json({ status: "ok" });
+          if (rest === "healthz") return moduleHealth(name);
           if (rest === "openapi.yaml") return yaml(golden);
           break;
         }
